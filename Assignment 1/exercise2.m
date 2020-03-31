@@ -12,6 +12,9 @@ IMPROVEMENTS.D = true;  % decay learning rate
 IMPROVEMENTS.E = true;  % Xavier initialization
 IMPROVEMENTS.G = true;  % shuffle before each epoch
 
+global SVM_MULTICLASS_LOSS
+SVM_MULTICLASS_LOSS = true;
+
 
 %% Load data
 
@@ -205,21 +208,36 @@ function [X, Y, y] = LoadBatch(filename)
 end
 
 function P = EvaluateClassifier(X, W, b)
+    global SVM_MULTICLASS_LOSS
+    
     S = W*X + b;
-    P = exp(S) ./ sum(exp(S));
+    if SVM_MULTICLASS_LOSS
+        P = S;
+    else
+        P = exp(S) ./ sum(exp(S));
+    end
     
 %     % alternative with the deep learning toolbox
 %     P = softmax(W*X + b);
 end
 
 function J = ComputeCost(X, Y, W, b, lambda)
+    global SVM_MULTICLASS_LOSS
+    
     P = EvaluateClassifier(X, W, b);
     
     % loss for each image
     N = size(X, 2);
     l = zeros(1, N);
-    for n = 1:N
-        l(n) = -log(Y(:, n)' * P(:, n));
+    if SVM_MULTICLASS_LOSS
+        for n = 1:N
+            y = Y(:, n) == 1;
+            l(n) = sum(max(0, P(~y, n) - P(y, n) + 1));
+        end
+    else
+        for n = 1:N
+            l(n) = -log(Y(:, n)' * P(:, n));
+        end
     end
     
     % regularization
@@ -238,10 +256,30 @@ function acc = ComputeAccuracy(X, y, W, b)
 end
 
 function [grad_W, grad_b] = ComputeGradients(X, Y, P, W, lambda)
-    G = P - Y;
-    n = size(X, 2);
-    grad_W = 1 / n * G * X' + 2 * lambda * W;
-    grad_b = 1 / n * sum(G, 2);
+    global SVM_MULTICLASS_LOSS    
+    
+    N = size(X, 2);
+    K = size(Y, 1);
+    
+    if SVM_MULTICLASS_LOSS
+        G = zeros(K, N);
+        for n = 1:N
+            y = find(Y(:, n) == 1);
+            for c = 1:K
+                if c == y
+                    continue
+                elseif P(c, n) - P(y, n) + 1 > 0
+                    G(c, n) = G(c, n) + 1;
+                    G(y, n) = G(y, n) - 1;
+                end
+            end
+        end
+    else
+        G = P - Y;
+    end
+
+    grad_W = 1 / N * G * X' + 2 * lambda * W;
+    grad_b = 1 / N * sum(G, 2);
 end
 
 function [Wstar, bstar] = MiniBatchGD(trainX, trainY, valX, valY, GDparams, W, b)
