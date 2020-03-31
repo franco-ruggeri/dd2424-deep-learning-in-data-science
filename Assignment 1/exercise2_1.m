@@ -5,12 +5,12 @@ clc
 rng(400)
 
 global IMPROVEMENTS
-IMPROVEMENTS.A = false;  % use all data
+IMPROVEMENTS.A = true;  % use all data
 IMPROVEMENTS.B = true;  % take the best model through the epochs
-IMPROVEMENTS.C = false;  % grid search
-IMPROVEMENTS.D = false;  % decay learning rate
-IMPROVEMENTS.E = false;  % Xavier initialization
-IMPROVEMENTS.G = false;  % shuffle before each epoch
+IMPROVEMENTS.C = true;  % grid search
+IMPROVEMENTS.D = true;  % decay learning rate
+IMPROVEMENTS.E = true;  % Xavier initialization
+IMPROVEMENTS.G = true;  % shuffle before each epoch
 
 
 %% Load data
@@ -125,18 +125,17 @@ disp('Training...');
 
 dir = 'result_pics/';
 
-n_updates = 2e5;
+n_updates = 100000;
 n = size(TrainingSet.X, 2);
 
 if IMPROVEMENTS.C
     % grid search
     minCost = Inf;
     config = 1;
-    for n_batch = linspace(1, 100, 2)
-        for eta = linspace(.001, 1, 2)
-            for lambda = linspace(0, .1, 2)
-                n_epochs = round(n_updates * n_batch / n);
-                GDparams = struct('n_batch', round(n_batch), 'eta', eta, 'n_epochs', n_epochs, 'lambda', lambda);
+    for n_batch = linspace(1, 100, 20)
+        for eta = logspace(-3, 0, 3)
+            for lambda = linspace(0, 1, 20)
+                GDparams = struct('n_batch', round(n_batch), 'eta', eta, 'n_epochs', round(n_updates * n_batch / n), 'lambda', lambda);
                 [Wtmp, btmp] = MiniBatchGD(TrainingSet.X, TrainingSet.Y, ValidationSet.X, ValidationSet.Y, GDparams, W, b);
                 
                 newCost = ComputeCost(ValidationSet.X, ValidationSet.Y, Wtmp, btmp, 0);
@@ -158,7 +157,7 @@ if IMPROVEMENTS.C
     
     % accuracy
     acc = ComputeAccuracy(TestSet.X, TestSet.y, Wstar, bstar);
-    fprintf('Test accuracy %d: %.2f%%\n', config, acc*100);
+    fprintf('Test accuracy: %.2f%%\n', acc*100);
 
     % class templates
     f = figure();
@@ -167,9 +166,9 @@ if IMPROVEMENTS.C
 else
     % parameters
     GDparams = [
-        struct('n_batch', 100, 'eta', .1, 'n_epochs', round(n_updates*100/n), 'lambda', 0)
-        struct('n_batch', 100, 'eta', .001, 'n_epochs', round(n_updates*100/n), 'lambda', 0)
-        struct('n_batch', 100, 'eta', .001, 'n_epochs', round(n_updates*100/n), 'lambda', .1)
+%         struct('n_batch', 100, 'eta', .1, 'n_epochs', round(n_updates*100/n), 'lambda', 0)
+%         struct('n_batch', 100, 'eta', .001, 'n_epochs', round(n_updates*100/n), 'lambda', 0)
+%         struct('n_batch', 100, 'eta', .001, 'n_epochs', round(n_updates*100/n), 'lambda', .1)
         struct('n_batch', 100, 'eta', .001, 'n_epochs', round(n_updates*100/n), 'lambda', 1)
     ];
 
@@ -307,6 +306,14 @@ function [Wstar, bstar] = MiniBatchGD(trainX, trainY, valX, valY, GDparams, W, b
                 Wstar = Wtmp;
                 bstar = btmp;
                 minCost = costs_val(epoch+1);
+            elseif abs(costs_val(epoch+1) - minCost) > 1e-3
+                % early stopping
+                n_epochs = epoch;   % for the plots
+                break;
+                
+                % Alternative: remove break, continue to update but take
+                % the best. More expensive but can find better solutions!
+                % The validation cost can be non-monotonic!
             end
         else
             % take always the last one
@@ -329,17 +336,18 @@ function [Wstar, bstar] = MiniBatchGD(trainX, trainY, valX, valY, GDparams, W, b
     
     % plot learning curve
     hold on
-    plot(1:n_epochs+1, costs_train, 'linewidth', 2);
-    plot(1:n_epochs+1, costs_val, 'linewidth', 2);
-    plot(1:n_epochs+1, losses_train, '--', 'linewidth', 1.5);
-    plot(1:n_epochs+1, losses_val, '--', 'linewidth', 1.5);
+    plot(1:n_epochs+1, costs_train(1:n_epochs+1), 'linewidth', 2);
+    plot(1:n_epochs+1, costs_val(1:n_epochs+1), 'linewidth', 2);
+    plot(1:n_epochs+1, losses_train(1:n_epochs+1), '--', 'linewidth', 1.5);
+    plot(1:n_epochs+1, losses_val(1:n_epochs+1), '--', 'linewidth', 1.5);
     xlabel('epoch');
     ylabel('cost / loss');
-    
+    legend('training cost', 'validation cost', 'training loss', 'validation loss');
 end
 
 function Montage(images)
     % re-arrange
+    s_im = cell(1, size(images, 1));
     for iImage = 1:size(images, 1)
         image = reshape(images(iImage, :), 32, 32, 3);
         s_im{iImage} = (image - min(image(:))) / (max(image(:)) - min(image(:)));

@@ -214,6 +214,7 @@ end
 
 function Montage(images)
     % re-arrange
+    s_im = cell(1, size(images, 1));
     for iImage = 1:size(images, 1)
         image = reshape(images(iImage, :), 32, 32, 3);
         s_im{iImage} = (image - min(image(:))) / (max(image(:)) - min(image(:)));
