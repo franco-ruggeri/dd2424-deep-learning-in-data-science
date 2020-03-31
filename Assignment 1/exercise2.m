@@ -7,10 +7,10 @@ rng(400)
 global IMPROVEMENTS
 IMPROVEMENTS.A = true;  % use all data
 IMPROVEMENTS.B = true;  % take the best model through the epochs
-IMPROVEMENTS.C = true;  % grid search
+IMPROVEMENTS.C = false;  % grid search
 IMPROVEMENTS.D = true;  % decay learning rate
-IMPROVEMENTS.E = true;  % Xavier initialization
-IMPROVEMENTS.G = true;  % shuffle before each epoch
+IMPROVEMENTS.E = false;  % Xavier initialization
+IMPROVEMENTS.G = false;  % shuffle before each epoch
 
 global SVM_MULTICLASS_LOSS
 SVM_MULTICLASS_LOSS = true;
@@ -128,14 +128,14 @@ disp('Training...');
 
 dir = 'result_pics/';
 
-n_updates = 100000;
+n_updates = 20000;
 n = size(TrainingSet.X, 2);
 
 if IMPROVEMENTS.C
     % grid search
     minCost = Inf;
     config = 1;
-    for n_batch = linspace(1, 100, 20)
+    for n_batch = linspace(1, 100, 5)
         for eta = logspace(-3, 0, 3)
             for lambda = linspace(0, 1, 20)
                 GDparams = struct('n_batch', round(n_batch), 'eta', eta, 'n_epochs', round(n_updates * n_batch / n), 'lambda', lambda);
@@ -169,9 +169,9 @@ if IMPROVEMENTS.C
 else
     % parameters
     GDparams = [
-%         struct('n_batch', 100, 'eta', .1, 'n_epochs', round(n_updates*100/n), 'lambda', 0)
-%         struct('n_batch', 100, 'eta', .001, 'n_epochs', round(n_updates*100/n), 'lambda', 0)
-%         struct('n_batch', 100, 'eta', .001, 'n_epochs', round(n_updates*100/n), 'lambda', .1)
+        struct('n_batch', 100, 'eta', .1, 'n_epochs', round(n_updates*100/n), 'lambda', 0)
+        struct('n_batch', 100, 'eta', .001, 'n_epochs', round(n_updates*100/n), 'lambda', 0)
+        struct('n_batch', 100, 'eta', .001, 'n_epochs', round(n_updates*100/n), 'lambda', .1)
         struct('n_batch', 100, 'eta', .001, 'n_epochs', round(n_updates*100/n), 'lambda', 1)
     ];
 
