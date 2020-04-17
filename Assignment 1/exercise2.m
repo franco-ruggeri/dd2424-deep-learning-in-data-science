@@ -7,13 +7,13 @@ rng(400)
 global IMPROVEMENTS
 IMPROVEMENTS.A = true;  % use all data
 IMPROVEMENTS.B = true;  % take the best model through the epochs
-IMPROVEMENTS.C = false;  % grid search
+IMPROVEMENTS.C = true;  % grid search
 IMPROVEMENTS.D = true;  % decay learning rate
-IMPROVEMENTS.E = false;  % Xavier initialization
-IMPROVEMENTS.G = false;  % shuffle before each epoch
+IMPROVEMENTS.E = true;  % Xavier initialization
+IMPROVEMENTS.G = true;  % shuffle before each epoch
 
 global SVM_MULTICLASS_LOSS
-SVM_MULTICLASS_LOSS = true;
+SVM_MULTICLASS_LOSS = false;
 
 
 %% Load data
@@ -86,18 +86,13 @@ d = size(TrainingSet.X, 1);
 
 if IMPROVEMENTS.E
     % Xavier initialization
-    fan_in = d;
-    fan_out = K;
-    left = -sqrt(6) / (fan_in + fan_out);
-    right = -left;
-
-    W = left + (right-left) * rand(K, d);
-    b = left + (right-left) * rand(K, 1);
+    std = 1 / sqrt(d);
 else
     std = .01;
-    W = std * randn(K, d);
-    b = std * randn(K, 1);
 end
+
+W = std * randn(K, d);
+b = std * randn(K, 1);
 
 
 %% Check gradients
@@ -128,7 +123,7 @@ disp('Training...');
 
 dir = 'result_pics/';
 
-n_updates = 20000;
+n_updates = 200;
 n = size(TrainingSet.X, 2);
 
 if IMPROVEMENTS.C
