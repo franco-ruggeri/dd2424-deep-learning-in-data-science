@@ -20,7 +20,7 @@ SVM_MULTICLASS_LOSS = false;
 
 fprintf('Loading data...\n\n');
 
-dir = 'datasets/cifar-10-batches-mat/';
+dir = '../datasets/cifar-10-batches-mat/';
 
 if IMPROVEMENTS.A
     % training data
