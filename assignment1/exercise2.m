@@ -369,10 +369,10 @@ function [Wstar, bstar] = MiniBatchGD(trainX, trainY, valX, valY, GDparams, W, b
     
     % plot learning curve
     hold on
-    plot(1:n_epochs+1, costs_train(1:n_epochs+1), 'linewidth', 2);
-    plot(1:n_epochs+1, costs_val(1:n_epochs+1), 'linewidth', 2);
-    plot(1:n_epochs+1, losses_train(1:n_epochs+1), '--', 'linewidth', 1.5);
-    plot(1:n_epochs+1, losses_val(1:n_epochs+1), '--', 'linewidth', 1.5);
+    plot(0:n_epochs, costs_train(1:n_epochs+1), 'linewidth', 2);
+    plot(0:n_epochs, costs_val(1:n_epochs+1), 'linewidth', 2);
+    plot(0:n_epochs, losses_train(1:n_epochs+1), '--', 'linewidth', 1.5);
+    plot(0:n_epochs, losses_val(1:n_epochs+1), '--', 'linewidth', 1.5);
     xlabel('epoch');
     ylabel('cost / loss');
     legend('training cost', 'validation cost', 'training loss', 'validation loss');
