@@ -9,6 +9,7 @@ dir_dataset = '../datasets/surnames/';
 
 filename_ascii = [dir_dataset 'ascii_names.mat'];
 filename_encoded = [dir_dataset 'encoded_names.mat'];
+filename_validation = [dir_dataset 'Validation_Inds.txt'];
 
 % load ascii names
 if ~isfile(filename_ascii)
@@ -58,6 +59,22 @@ else
     aux = load(filename_encoded);
     X = aux.X;
 end
+
+% partition in training and validation set
+fid = fopen(filename_validation);
+validation_idx = split(fgets(fid));
+fclose(fid);
+validation_idx = validation_idx(1:end-1);
+for iIdx = 1:length(validation_idx)
+    validation_idx{iIdx} = str2double(validation_idx{iIdx});
+end
+validation_idx = cell2mat(validation_idx);
+ValidationSet.X = X(:, validation_idx);
+ValidationSet.y = ys(validation_idx);
+TrainingSet.X = X;
+TrainingSet.y = ys;
+TrainingSet.X(:, validation_idx) = [];
+TrainingSet.y(validation_idx) = [];
 
 
 %% Back-propagation
