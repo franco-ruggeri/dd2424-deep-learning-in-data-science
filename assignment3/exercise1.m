@@ -77,6 +77,29 @@ TrainingSet.X(:, validation_idx) = [];
 TrainingSet.y(validation_idx) = [];
 
 
+%% ConvNet architecture
+
+% hyper-parameters
+n1 = ;
+k1 = ;
+n2 = ;
+k2 = ;
+eta = .001;
+rho = .9;
+
+% intermediate dimensions
+n_len1 = n_len - k1 + 1;
+n_len2 = n_len1 - k2 + 1;
+
+% He initialization
+sig1 = 1 / sqrt(k1);
+sig2 = sqrt(2 / (n1*k2));
+sig3 = sqrt(2 / (n2*n_len2));
+ConvNet.F{1} = randn(d, k1, n1) * sig1;
+ConvNet.F{2} = randn(n1, k2, n2) * sig2;
+ConvNet.W = randn(K, n2*n_len2) * sig3;
+
+
 %% Back-propagation
 
 %% Mini-batch GD with momentum
