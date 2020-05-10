@@ -8,7 +8,10 @@ dir_dataset = '../datasets/surnames/';
 dir_result_pics = 'result_pics/';
 
 global PRECOMPUTED_MX1;
-PRECOMPUTED_MX1 = false;    % disable if the script crashes for memory reasons
+global COMPENSATE_UNBALANCED;
+
+PRECOMPUTED_MX1 = false;        % disable if the script crashes for memory reasons
+COMPENSATE_UNBALANCED = true;   % disable only if you want to see the effect of not having it
 
 
 %% Prepare data
@@ -99,8 +102,8 @@ TrainingSet.Ys(:, validation_idx) = [];
 
 % 1 row per layer with format (k, nf) = (width, number of filter)
 conv_layer_sizes = [
-    5 10
-    5 10
+    5 20
+    3 20
 ];
 
 
@@ -153,7 +156,7 @@ fprintf('\n');
 disp('Training...');
 
 % train
-GDparams = struct('eta', .001, 'rho', .9, 'n_batch', 100, 'max_iter', 10000, 'n_update', 10);
+GDparams = struct('eta', .005, 'rho', .9, 'n_batch', 100, 'max_iter', 50000, 'n_update', 500);
 ConvNet = InitConvNet(conv_layer_sizes, d, n_len, K);
 [ConvNet, f_loss, f_acc] = MiniBatchGD(TrainingSet, ValidationSet, GDparams, ConvNet);
 saveas(f_loss, [dir_result_pics 'loss.jpg']);
@@ -166,33 +169,6 @@ fprintf('Accuracy (validation set): %.2f%%\n', acc*100);
 % confusion matrix
 fprintf('Confusion matrix (validation set)\n');
 disp(ComputeConfusionMatrix(ValidationSet.X, ValidationSet.ys, ConvNet));
-
-
-%% Init parameters
-
-function ConvNet = InitConvNet(conv_layer_sizes, d, n_len, K)
-    % convolutional layers
-    for l = 1:size(conv_layer_sizes)
-        k = conv_layer_sizes(l, 1);
-        nf = conv_layer_sizes(l, 2);
-        
-        % He initialization
-        if l == 1
-            sig = 1 / sqrt(k);  % modified for the first layer (see note)
-        else
-            sig = sqrt(2 / (n_len*k));
-        end
-        ConvNet.F{l} = randn(d, k, nf) * sig;
-        
-        n_len = n_len - k + 1;  % keep track for FC layer
-        d = nf;                 % keep track for next convolutional layer
-    end
-    
-    % fully connected layer
-    nf = conv_layer_sizes(end, 2);
-    sig = sqrt(2 / (nf*n_len));
-    ConvNet.W = randn(K, nf*n_len) * sig;
-end
 
 
 %% Convolutional matrices
@@ -316,28 +292,30 @@ function Gs = ComputeGradients(X_batch, Ys_batch, P_batch, ConvNet)
 end
 
 function [ConvNet, f_loss, f_acc] = MiniBatchGD(TrainingSet, ValidationSet, GDparams, ConvNet)
-    global PRECOMPUTED_MX1
-
-    n = size(TrainingSet.X, 2);
+    global PRECOMPUTED_MX1;
+    global COMPENSATE_UNBALANCED;
+    
     n_conv_layers = length(ConvNet.F);
-
-    % optimization 1: pre-compute MX for the first layer
-    if PRECOMPUTED_MX1
-        [d, k, nf] = size(ConvNet.F{1});
-        nlen = size(TrainingSet.X, 1) / d;
-        MX1 = zeros((nlen-k+1)*nf, d*k*nf, n);
-        for j = 1:n
-            MX1(:, :, j) = MakeMXMatrix(TrainingSet.X(:, j), d, k, nf);
+    K = size(TrainingSet.Ys, 1);
+    if COMPENSATE_UNBALANCED
+        n_per_class = FindSmallestClass(TrainingSet);
+        n = n_per_class * K;
+    else
+        n = size(TrainingSet.X, 2);
+        
+        % optimization 1: pre-compute MX for the first layer
+        if PRECOMPUTED_MX1
+            PrecomputeMX1(TrainingSet, ConvNet.F{1});
         end
     end
-        
+    
     % get hyper-parameters
-    n_batch = GDparams.n_batch;     % size of mini-batches
-    n_batches = floor(n/n_batch);   % number of mini-batches in the training set
+    n_batch = GDparams.n_batch;         % size of mini-batches
+    iter_per_epoch = floor(n/n_batch);  % number of mini-batches in the training set
     eta = GDparams.eta;
     rho = GDparams.rho;
     max_iter = GDparams.max_iter;
-    n_update = GDparams.n_update;   % compute stats every n_update
+    n_update = GDparams.n_update;       % compute stats every n_update
 
     % stats
     n_measures = floor(max_iter / n_update);
@@ -358,14 +336,25 @@ function [ConvNet, f_loss, f_acc] = MiniBatchGD(TrainingSet, ValidationSet, GDpa
     V{end} = zeros(size(ConvNet.W));
     
     for t = 1:max_iter
-        batch = mod(t-1, n_batches) + 1;
+        % new epoch => resample
+        if COMPENSATE_UNBALANCED && mod(t-1, iter_per_epoch) == 0
+            TrainingSet_ = SubSample(TrainingSet, n);
+
+            % optimization 1: pre-compute MX for the first layer
+            if PRECOMPUTED_MX1
+                MX1 = PrecomputeMX1(TrainingSet_, ConvNet.F{1});
+            end
+        else
+            TrainingSet_ = TrainingSet;
+        end
 
         % select minibatch
+        batch = mod(t-1, iter_per_epoch) + 1;
         idx_start = (batch-1) * n_batch + 1;
         idx_end = batch * n_batch;
         idx = idx_start:idx_end;
-        X_batch = TrainingSet.X(:, idx);
-        Ys_batch = TrainingSet.Ys(:, idx);
+        X_batch = TrainingSet_.X(:, idx);
+        Ys_batch = TrainingSet_.Ys(:, idx);
         if PRECOMPUTED_MX1
             ConvNet.MX1 = MX1(idx);
         end
@@ -449,6 +438,77 @@ function CM = ComputeConfusionMatrix(X, y, ConvNet)
             n_pred = length(find(ypred(idx) == k2));
             CM(k1, k2) = n_pred;
         end
+    end
+end
+
+
+%% Utility functions
+
+function ConvNet = InitConvNet(conv_layer_sizes, d, n_len, K)
+    % convolutional layers
+    for l = 1:size(conv_layer_sizes)
+        k = conv_layer_sizes(l, 1);
+        nf = conv_layer_sizes(l, 2);
+        
+        % He initialization
+        if l == 1
+            sig = 1 / sqrt(k);  % modified for the first layer (see note)
+        else
+            sig = sqrt(2 / (n_len*k));
+        end
+        ConvNet.F{l} = randn(d, k, nf) * sig;
+        
+        n_len = n_len - k + 1;  % keep track for FC layer
+        d = nf;                 % keep track for next convolutional layer
+    end
+    
+    % fully connected layer
+    nf = conv_layer_sizes(end, 2);
+    sig = sqrt(2 / (nf*n_len));
+    ConvNet.W = randn(K, nf*n_len) * sig;
+end
+
+function SubDataset = SubSample(Dataset, n)
+    K = size(Dataset.Ys, 1);
+    d = size(Dataset.X, 1);
+    n_per_class = round(n / K);
+    SubDataset = struct('X', zeros(d, n), 'Ys', zeros(K, n), 'ys', zeros(1, n));
+    
+    for k = 1:K
+        % sample
+        idx = find(Dataset.ys == k);
+        idx = idx(randperm(length(idx), n_per_class));
+        
+        % add to new dataset
+        idx_start = 1+(k-1)*n_per_class;
+        idx_end = idx_start + n_per_class - 1;
+        SubDataset.X(:, idx_start:idx_end) = Dataset.X(:, idx);
+        SubDataset.Ys(:, idx_start:idx_end) = Dataset.Ys(:, idx);
+        SubDataset.ys(idx_start:idx_end) = Dataset.ys(idx);
+    end
+end
+
+function [n_samples, class] = FindSmallestClass(Dataset)
+    K = size(Dataset.Ys, 1);
+    n_samples = Inf;
+    for k = 1:K
+        idx = find(Dataset.ys == k);
+        aux = length(find(Dataset.ys == k));
+        if aux < n_samples
+            n_samples = aux;
+            class = k;
+        end
+    end
+end
+
+function MX1 = PrecomputeMX1(TrainingSet, F1)
+    [d, k, nf] = size(F1);
+    nlen = size(TrainingSet.X, 1) / d;
+    n = size(TrainingSet.X, 2);
+    
+    MX1 = zeros((nlen-k+1)*nf, d*k*nf, n);
+    for j = 1:n
+        MX1(:, :, j) = MakeMXMatrix(TrainingSet.X(:, j), d, k, nf);
     end
 end
 
