@@ -2,10 +2,14 @@ clear all
 close all
 clc
 
+rng(1);
+
 dir_dataset = '../datasets/surnames/';
 
 
 %% Prepare data
+
+fprintf('Preparing data...\n\n');
 
 filename_ascii = [dir_dataset 'ascii_names.mat'];
 filename_encoded = [dir_dataset 'encoded_names.mat'];
@@ -80,10 +84,10 @@ TrainingSet.y(validation_idx) = [];
 %% ConvNet architecture
 
 % hyper-parameters
-n1 = ;
-k1 = ;
-n2 = ;
-k2 = ;
+n1 = 3;
+k1 = 2;
+n2 = 1;
+k2 = 2;
 eta = .001;
 rho = .9;
 
@@ -100,6 +104,26 @@ ConvNet.F{2} = randn(n1, k2, n2) * sig2;
 ConvNet.W = randn(K, n2*n_len2) * sig3;
 
 
+%% Check convolutional matrices
+
+disp('Checking gradients...');
+
+filename = 'DebugInfo.mat';
+
+debug = load(filename);
+
+[d_, k_, nf_] = size(debug.F);
+n_len_ = size(debug.X_input, 2);
+
+MX = MakeMXMatrix(debug.x_input, d_, k_, nf_);
+MF = MakeMFMatrix(debug.F, n_len_);
+
+s1 = MX * debug.F(:);
+s2 = MF * debug.x_input;
+
+disp([s1, s2, debug.vecS]);
+
+
 %% Back-propagation
 
 %% Mini-batch GD with momentum
@@ -109,3 +133,43 @@ ConvNet.W = randn(K, n2*n_len2) * sig3;
 %% Functions for evaluation
 
 
+%% Functions
+
+function MF = MakeMFMatrix(F, nlen)
+    [d, k, nf] = size(F);
+    nlen1 = nlen - k + 1;   % width of a response map
+    dk = d*k;              % size of a vectorized filter
+    
+    MF = zeros(nlen1*nf, nlen*d);
+    VF = reshape(F, [dk, nf])';
+    
+    for n = 1:nlen1
+        row_start = 1 + (n-1) * nf;
+        row_end = row_start + nf - 1;
+        col_start = 1 + (n-1) * d;
+        col_end = col_start + dk - 1;
+        
+        MF(row_start:row_end, col_start:col_end) = VF;
+    end
+end
+
+function MX = MakeMXMatrix(x_input, d, k, nf)
+    nlen = length(x_input) / d;
+    nlen1 = nlen - k + 1;   % width of a response map
+    dk = d*k;               % size of a vectorized filter
+
+    MX = zeros((nlen-k+1)*nf, dk*nf);
+    X_input = reshape(x_input, [d, nlen]);
+    
+    for n = 1:nlen1
+        for f = 1:nf
+            row_start = (n-1) * nf + f;
+            row_end = row_start;
+            col_start = 1 + (f-1) * dk;
+            col_end = col_start + dk - 1;
+            
+            aux = X_input(:, n:(n+k-1));
+            MX(row_start:row_end, col_start:col_end) = aux(:)';
+        end
+    end
+end
