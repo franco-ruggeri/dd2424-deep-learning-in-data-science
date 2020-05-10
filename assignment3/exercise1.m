@@ -7,6 +7,9 @@ rng(1);
 dir_dataset = '../datasets/surnames/';
 dir_result_pics = 'result_pics/';
 
+global PRECOMPUTED_MX1;
+PRECOMPUTED_MX1 = false;    % disable if the script crashes for memory reasons
+
 
 %% Prepare data
 
@@ -82,10 +85,10 @@ for iIdx = 1:length(validation_idx)
 end
 validation_idx = cell2mat(validation_idx);
 ValidationSet.X = X(:, validation_idx);
-ValidationSet.ys = ys(validation_idx);
+ValidationSet.ys = ys(validation_idx)';
 ValidationSet.Ys = Ys(:, validation_idx);
 TrainingSet.X = X;
-TrainingSet.ys = ys;
+TrainingSet.ys = ys';
 TrainingSet.Ys = Ys;
 TrainingSet.X(:, validation_idx) = [];
 TrainingSet.ys(validation_idx) = [];
@@ -145,12 +148,24 @@ fprintf('Max relative error grad_W: %e\n', max(abs(Gs{end} - Gs_num{end}) ./ max
 fprintf('\n');
 
 
-%% Train
+%% Train and test
 
-GDparams = struct('eta', .001, 'rho', .9, 'n_batch', 100, 'max_iter', 1000, 'n_update', 50);
+disp('Training...');
+
+% train
+GDparams = struct('eta', .001, 'rho', .9, 'n_batch', 100, 'max_iter', 10000, 'n_update', 10);
 ConvNet = InitConvNet(conv_layer_sizes, d, n_len, K);
-[ConvNet, f_loss] = MiniBatchGD(TrainingSet, ValidationSet, GDparams, ConvNet);
+[ConvNet, f_loss, f_acc] = MiniBatchGD(TrainingSet, ValidationSet, GDparams, ConvNet);
 saveas(f_loss, [dir_result_pics 'loss.jpg']);
+saveas(f_acc, [dir_result_pics 'accuracy.jpg']);
+
+% validation accuracy (not test accuracy, see instructions)
+acc = ComputeAccuracy(ValidationSet.X, ValidationSet.ys, ConvNet);
+fprintf('Accuracy (validation set): %.2f%%\n', acc*100);
+
+% confusion matrix
+fprintf('Confusion matrix (validation set)\n');
+disp(ComputeConfusionMatrix(ValidationSet.X, ValidationSet.ys, ConvNet));
 
 
 %% Init parameters
@@ -300,18 +315,22 @@ function Gs = ComputeGradients(X_batch, Ys_batch, P_batch, ConvNet)
     end
 end
 
-function [ConvNet, f_loss] = MiniBatchGD(TrainingSet, ValidationSet, GDparams, ConvNet)
+function [ConvNet, f_loss, f_acc] = MiniBatchGD(TrainingSet, ValidationSet, GDparams, ConvNet)
+    global PRECOMPUTED_MX1
+
     n = size(TrainingSet.X, 2);
     n_conv_layers = length(ConvNet.F);
 
     % optimization 1: pre-compute MX for the first layer
-%     [d, k, nf] = size(ConvNet.F{1});
-%     nlen = size(TrainingSet.X, 1) / d;
-%     ConvNet.MX1 = zeros((nlen-k+1)*nf, d*k*nf, n);
-%     for j = 1:n
-%         ConvNet.MX1(:, :, j) = MakeMXMatrix(TrainingSet.X(:, j), d, k1, n1);
-%     end
-    
+    if PRECOMPUTED_MX1
+        [d, k, nf] = size(ConvNet.F{1});
+        nlen = size(TrainingSet.X, 1) / d;
+        MX1 = zeros((nlen-k+1)*nf, d*k*nf, n);
+        for j = 1:n
+            MX1(:, :, j) = MakeMXMatrix(TrainingSet.X(:, j), d, k, nf);
+        end
+    end
+        
     % get hyper-parameters
     n_batch = GDparams.n_batch;     % size of mini-batches
     n_batches = floor(n/n_batch);   % number of mini-batches in the training set
@@ -324,8 +343,12 @@ function [ConvNet, f_loss] = MiniBatchGD(TrainingSet, ValidationSet, GDparams, C
     n_measures = floor(max_iter / n_update);
     losses_train = [ComputeLoss(TrainingSet.X, TrainingSet.Ys, ConvNet), zeros(1, n_measures)];
     losses_val = [ComputeLoss(ValidationSet.X, ValidationSet.Ys, ConvNet), zeros(1, n_measures)];
+    acc_train = [ComputeAccuracy(TrainingSet.X, TrainingSet.ys, ConvNet), zeros(1, n_measures)];
+    acc_val = [ComputeAccuracy(ValidationSet.X, ValidationSet.ys, ConvNet), zeros(1, n_measures)];
     measured_updates = [0, zeros(1, floor(max_iter/n_update))];
     idx_measure = 2;
+    fprintf('Confusion matrix (validation set, iteration %d of %d)\n', 0, max_iter);
+    disp(ComputeConfusionMatrix(ValidationSet.X, ValidationSet.ys, ConvNet));
     
     % init momentum
     V = cell(n_conv_layers+1, 1);
@@ -343,7 +366,10 @@ function [ConvNet, f_loss] = MiniBatchGD(TrainingSet, ValidationSet, GDparams, C
         idx = idx_start:idx_end;
         X_batch = TrainingSet.X(:, idx);
         Ys_batch = TrainingSet.Ys(:, idx);
-
+        if PRECOMPUTED_MX1
+            ConvNet.MX1 = MX1(idx);
+        end
+        
         % forward pass
         [P_batch, X_batch] = EvaluateClassifier(X_batch, ConvNet);
 
@@ -362,27 +388,37 @@ function [ConvNet, f_loss] = MiniBatchGD(TrainingSet, ValidationSet, GDparams, C
 
         % stats
         if mod(t, n_update) == 0
-            % loss
             losses_train(idx_measure) = ComputeLoss(TrainingSet.X, TrainingSet.Ys, ConvNet);
             losses_val(idx_measure) = ComputeLoss(ValidationSet.X, ValidationSet.Ys, ConvNet);
+            acc_train(idx_measure) = ComputeAccuracy(TrainingSet.X, TrainingSet.ys, ConvNet);
+            acc_val(idx_measure) = ComputeAccuracy(ValidationSet.X, ValidationSet.ys, ConvNet);
             measured_updates(idx_measure) = t;
             idx_measure = idx_measure + 1;
             
             % confusion matrix
-            fprintf('Confusion matrix (iteration %d of %d)\n', t, max_iter);
+            fprintf('Confusion matrix (validation set, iteration %d of %d)\n', t, max_iter);
             disp(ComputeConfusionMatrix(ValidationSet.X, ValidationSet.ys, ConvNet));
         end
         
 %         fprintf('Iteration %d of %d\n completed', t, max_iter);
     end
     
-    % plot cost/loss curve
+    % plot loss curve
     f_loss = figure();
     hold on
     plot(measured_updates, losses_train, 'linewidth', 2);
     plot(measured_updates, losses_val, 'linewidth', 2);
     xlabel('update step');
     ylabel('loss');
+    legend('training', 'validation');
+    
+    % plot accuracy
+    f_acc = figure();
+    hold on
+    plot(measured_updates, acc_train, 'linewidth', 2);
+    plot(measured_updates, acc_val, 'linewidth', 2);
+    xlabel('update step');
+    ylabel('accuracy');
     legend('training', 'validation');
 end
 
