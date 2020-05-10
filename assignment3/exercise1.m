@@ -5,6 +5,7 @@ clc
 rng(1);
 
 dir_dataset = '../datasets/surnames/';
+dir_result_pics = 'result_pics/';
 
 
 %% Prepare data
@@ -93,26 +94,11 @@ TrainingSet.Ys(:, validation_idx) = [];
 
 %% ConvNet architecture
 
-% hyper-parameters
-n_conv_layers = 2;
-n1 = 5;
-k1 = 5;
-n2 = 5;
-k2 = 5;
-eta = .001;
-rho = .9;
-
-% intermediate dimensions
-n_len1 = n_len - k1 + 1;
-n_len2 = n_len1 - k2 + 1;
-
-% He initialization
-sig1 = 1 / sqrt(k1);
-sig2 = sqrt(2 / (n1*k2));
-sig3 = sqrt(2 / (n2*n_len2));
-ConvNet.F{1} = randn(d, k1, n1) * sig1;
-ConvNet.F{2} = randn(n1, k2, n2) * sig2;
-ConvNet.W = randn(K, n2*n_len2) * sig3;
+% 1 row per layer with format (k, nf) = (width, number of filter)
+conv_layer_sizes = [
+    5 10
+    5 10
+];
 
 
 %% Check convolutional matrices
@@ -143,12 +129,14 @@ n_batch_ = 3;
 
 trainX = TrainingSet.X(:, 1:n_batch_);
 trainYs = TrainingSet.Ys(:, 1:n_batch_);
+
+ConvNet = InitConvNet(conv_layer_sizes, d, n_len, K);
 [P, X] = EvaluateClassifier(trainX, ConvNet);
 
 Gs = ComputeGradients(X, trainYs, P, ConvNet);
 Gs_num = NumericalGradient(trainX, trainYs, ConvNet, 1e-6);
 
-for l = 1:n_conv_layers
+for l = 1:size(conv_layer_sizes, 1)
     fprintf('Max absolute error grad_F%d: %e\n', l, max(abs(Gs{l} - Gs_num{l}), [], 'all'));
     fprintf('Max relative error grad_F%d: %e\n', l, max(abs(Gs{l} - Gs_num{l}) ./ max(eps, abs(Gs{l}) + abs(Gs_num{l})), [], 'all'));
 end
@@ -157,22 +145,47 @@ fprintf('Max relative error grad_W: %e\n', max(abs(Gs{end} - Gs_num{end}) ./ max
 fprintf('\n');
 
 
-%% Back-propagation
+%% Train
 
-%% Mini-batch GD with momentum
+GDparams = struct('eta', .001, 'rho', .9, 'n_batch', 100, 'max_iter', 1000, 'n_update', 50);
+ConvNet = InitConvNet(conv_layer_sizes, d, n_len, K);
+[ConvNet, f_loss] = MiniBatchGD(TrainingSet, ValidationSet, GDparams, ConvNet);
+saveas(f_loss, [dir_result_pics 'loss.jpg']);
 
-%% Sampling of the training data
 
-%% Functions for evaluation
+%% Init parameters
+
+function ConvNet = InitConvNet(conv_layer_sizes, d, n_len, K)
+    % convolutional layers
+    for l = 1:size(conv_layer_sizes)
+        k = conv_layer_sizes(l, 1);
+        nf = conv_layer_sizes(l, 2);
+        
+        % He initialization
+        if l == 1
+            sig = 1 / sqrt(k);  % modified for the first layer (see note)
+        else
+            sig = sqrt(2 / (n_len*k));
+        end
+        ConvNet.F{l} = randn(d, k, nf) * sig;
+        
+        n_len = n_len - k + 1;  % keep track for FC layer
+        d = nf;                 % keep track for next convolutional layer
+    end
+    
+    % fully connected layer
+    nf = conv_layer_sizes(end, 2);
+    sig = sqrt(2 / (nf*n_len));
+    ConvNet.W = randn(K, nf*n_len) * sig;
+end
 
 
-%% Functions
+%% Convolutional matrices
 
 function MF = MakeMFMatrix(F, nlen)
     [d, k, nf] = size(F);
     nlen1 = nlen - k + 1;   % width of a response map
     dk = d*k;              % size of a vectorized filter
-    
     MF = zeros(nlen1*nf, nlen*d);
     VF = reshape(F, [dk, nf])';
     
@@ -206,6 +219,9 @@ function MX = MakeMXMatrix(x_input, d, k, nf)
         end
     end
 end
+
+
+%% Mini-batch GD with momentum
 
 function [P_batch, X_batch] = EvaluateClassifier(X_batch, ConvNet)
     n_conv_layers = length(ConvNet.F);
@@ -284,8 +300,124 @@ function Gs = ComputeGradients(X_batch, Ys_batch, P_batch, ConvNet)
     end
 end
 
+function [ConvNet, f_loss] = MiniBatchGD(TrainingSet, ValidationSet, GDparams, ConvNet)
+    n = size(TrainingSet.X, 2);
+    n_conv_layers = length(ConvNet.F);
 
-%% Provided functions for numerical computation of gradients
+    % optimization 1: pre-compute MX for the first layer
+%     [d, k, nf] = size(ConvNet.F{1});
+%     nlen = size(TrainingSet.X, 1) / d;
+%     ConvNet.MX1 = zeros((nlen-k+1)*nf, d*k*nf, n);
+%     for j = 1:n
+%         ConvNet.MX1(:, :, j) = MakeMXMatrix(TrainingSet.X(:, j), d, k1, n1);
+%     end
+    
+    % get hyper-parameters
+    n_batch = GDparams.n_batch;     % size of mini-batches
+    n_batches = floor(n/n_batch);   % number of mini-batches in the training set
+    eta = GDparams.eta;
+    rho = GDparams.rho;
+    max_iter = GDparams.max_iter;
+    n_update = GDparams.n_update;   % compute stats every n_update
+
+    % stats
+    n_measures = floor(max_iter / n_update);
+    losses_train = [ComputeLoss(TrainingSet.X, TrainingSet.Ys, ConvNet), zeros(1, n_measures)];
+    losses_val = [ComputeLoss(ValidationSet.X, ValidationSet.Ys, ConvNet), zeros(1, n_measures)];
+    measured_updates = [0, zeros(1, floor(max_iter/n_update))];
+    idx_measure = 2;
+    
+    % init momentum
+    V = cell(n_conv_layers+1, 1);
+    for l = 1:n_conv_layers
+        V{l} = zeros(size(ConvNet.F{l}));
+    end
+    V{end} = zeros(size(ConvNet.W));
+    
+    for t = 1:max_iter
+        batch = mod(t-1, n_batches) + 1;
+
+        % select minibatch
+        idx_start = (batch-1) * n_batch + 1;
+        idx_end = batch * n_batch;
+        idx = idx_start:idx_end;
+        X_batch = TrainingSet.X(:, idx);
+        Ys_batch = TrainingSet.Ys(:, idx);
+
+        % forward pass
+        [P_batch, X_batch] = EvaluateClassifier(X_batch, ConvNet);
+
+        % backward pass
+        Gs = ComputeGradients(X_batch, Ys_batch, P_batch, ConvNet);
+
+        % update convolutional layers
+        for l = 1:n_conv_layers
+            V{l} = rho * V{l} + eta * Gs{l};
+            ConvNet.F{l} = ConvNet.F{l} - V{l};
+        end
+        
+        % update fully connected layer
+        V{end} = rho * V{end} + eta * Gs{end};
+        ConvNet.W = ConvNet.W - V{end};
+
+        % stats
+        if mod(t, n_update) == 0
+            % loss
+            losses_train(idx_measure) = ComputeLoss(TrainingSet.X, TrainingSet.Ys, ConvNet);
+            losses_val(idx_measure) = ComputeLoss(ValidationSet.X, ValidationSet.Ys, ConvNet);
+            measured_updates(idx_measure) = t;
+            idx_measure = idx_measure + 1;
+            
+            % confusion matrix
+            fprintf('Confusion matrix (iteration %d of %d)\n', t, max_iter);
+            disp(ComputeConfusionMatrix(ValidationSet.X, ValidationSet.ys, ConvNet));
+        end
+        
+%         fprintf('Iteration %d of %d\n completed', t, max_iter);
+    end
+    
+    % plot cost/loss curve
+    f_loss = figure();
+    hold on
+    plot(measured_updates, losses_train, 'linewidth', 2);
+    plot(measured_updates, losses_val, 'linewidth', 2);
+    xlabel('update step');
+    ylabel('loss');
+    legend('training', 'validation');
+end
+
+
+%% Evaluation metrics
+
+function acc = ComputeAccuracy(X, y, ConvNet)
+    P = EvaluateClassifier(X, ConvNet);
+    [~, ypred] = max(P);
+    nCorrect = length(find(ypred == y));
+    nTot = size(X, 2);
+    acc = nCorrect / nTot;
+end
+
+function CM = ComputeConfusionMatrix(X, y, ConvNet)
+    K = size(ConvNet.W, 1);
+    
+    P = EvaluateClassifier(X, ConvNet);
+    [~, ypred] = max(P);
+    
+    CM = zeros(K);
+    for k1 = 1:K
+        % data belonging to class k1
+        idx = find(y == k1);
+        
+        for k2 = 1:K
+            % # data belonging to class k1 and predicted as class k2
+            n_pred = length(find(ypred(idx) == k2));
+            CM(k1, k2) = n_pred;
+        end
+    end
+end
+
+
+%% Numerical computation of gradients (provided)
 
 function Gs = NumericalGradient(X_inputs, Ys, ConvNet, h)
     try_ConvNet = ConvNet;
