@@ -38,7 +38,8 @@ char_to_ind = containers.Map(num2cell(C), 1:length(C));
 if ~isfile(filename_encoded)
     X = zeros(d*n_len, N);
     
-    for iName = 1:length(all_names)
+    % encode names
+    for iName = 1:N
         name = all_names{iName};
 
         % one-hot encoding
@@ -55,39 +56,49 @@ if ~isfile(filename_encoded)
         % store
         X(:, iName) = vectorized_name;
     end
+    
+    % encode labels
+    Ys = zeros(K, N);
+    for n = 1:N
+        Ys(ys(n), n) = 1;
+    end
 
-    % save encoded names
-    save(filename_encoded);
+    % save
+    save(filename_encoded, 'X', 'Ys');
 else
-    % load encoded names
     aux = load(filename_encoded);
     X = aux.X;
+    Ys = aux.Ys;
 end
 
 % partition in training and validation set
 fid = fopen(filename_validation);
 validation_idx = split(fgets(fid));
 fclose(fid);
-validation_idx = validation_idx(1:end-1);
+validation_idx = validation_idx(1:end-1);   % the last one is a space
 for iIdx = 1:length(validation_idx)
     validation_idx{iIdx} = str2double(validation_idx{iIdx});
 end
 validation_idx = cell2mat(validation_idx);
 ValidationSet.X = X(:, validation_idx);
-ValidationSet.y = ys(validation_idx);
+ValidationSet.ys = ys(validation_idx);
+ValidationSet.Ys = Ys(:, validation_idx);
 TrainingSet.X = X;
-TrainingSet.y = ys;
+TrainingSet.ys = ys;
+TrainingSet.Ys = Ys;
 TrainingSet.X(:, validation_idx) = [];
-TrainingSet.y(validation_idx) = [];
+TrainingSet.ys(validation_idx) = [];
+TrainingSet.Ys(:, validation_idx) = [];
 
 
 %% ConvNet architecture
 
 % hyper-parameters
-n1 = 3;
-k1 = 2;
-n2 = 1;
-k2 = 2;
+n_conv_layers = 2;
+n1 = 5;
+k1 = 5;
+n2 = 5;
+k2 = 5;
 eta = .001;
 rho = .9;
 
@@ -106,7 +117,7 @@ ConvNet.W = randn(K, n2*n_len2) * sig3;
 
 %% Check convolutional matrices
 
-disp('Checking gradients...');
+disp('Checking convolution matrices...');
 
 filename = 'DebugInfo.mat';
 
@@ -122,6 +133,28 @@ s1 = MX * debug.F(:);
 s2 = MF * debug.x_input;
 
 disp([s1, s2, debug.vecS]);
+
+
+%% Check gradients
+
+disp('Checking gradients...');
+
+n_batch_ = 3;
+
+trainX = TrainingSet.X(:, 1:n_batch_);
+trainYs = TrainingSet.Ys(:, 1:n_batch_);
+[P, X] = EvaluateClassifier(trainX, ConvNet);
+
+Gs = ComputeGradients(X, trainYs, P, ConvNet);
+Gs_num = NumericalGradient(trainX, trainYs, ConvNet, 1e-6);
+
+for l = 1:n_conv_layers
+    fprintf('Max absolute error grad_F%d: %e\n', l, max(abs(Gs{l} - Gs_num{l}), [], 'all'));
+    fprintf('Max relative error grad_F%d: %e\n', l, max(abs(Gs{l} - Gs_num{l}) ./ max(eps, abs(Gs{l}) + abs(Gs_num{l})), [], 'all'));
+end
+fprintf('Max absolute error grad_W: %e\n', max(abs(Gs{end} - Gs_num{end}), [], 'all'));
+fprintf('Max relative error grad_W: %e\n', max(abs(Gs{end} - Gs_num{end}) ./ max(eps, abs(Gs{end}) + abs(Gs_num{end})), [], 'all'));
+fprintf('\n');
 
 
 %% Back-propagation
@@ -172,4 +205,141 @@ function MX = MakeMXMatrix(x_input, d, k, nf)
             MX(row_start:row_end, col_start:col_end) = aux(:)';
         end
     end
+end
+
+function [P_batch, X_batch] = EvaluateClassifier(X_batch, ConvNet)
+    n_conv_layers = length(ConvNet.F);
+    n_len = size(X_batch, 1) / size(ConvNet.F{1}, 1);
+    X_batch = [X_batch; cell(n_conv_layers-1, 1)];
+    
+    % convolutional layers
+    for l = 1:n_conv_layers
+        MF = MakeMFMatrix(ConvNet.F{l}, n_len);   
+        X_batch{l+1} = max(0, MF * X_batch{l});
+        n_len = n_len - size(ConvNet.F{l}, 2) + 1;
+    end
+
+    % fully connected layer
+    S_batch = ConvNet.W * X_batch{end};
+    expS_batch = exp(S_batch);
+    P_batch = expS_batch ./ sum(expS_batch);
+end
+
+function loss = ComputeLoss(X_batch, Ys_batch, ConvNet)
+    P = EvaluateClassifier(X_batch, ConvNet);
+    
+    % loss for each sample
+    N = size(X_batch, 2);
+    l = zeros(1, N);
+    for n = 1:N
+        l(n) = -log(Ys_batch(:, n)' * P(:, n));
+    end
+    
+    % loss for batch
+    loss = 1 / length(l) * sum(l);
+end
+
+function Gs = ComputeGradients(X_batch, Ys_batch, P_batch, ConvNet)
+    n = size(X_batch{1}, 2);
+    n_conv_layers = length(ConvNet.F);
+    Gs = cell(n_conv_layers+1, 1);
+    G_batch = P_batch - Ys_batch;
+
+    % fully connected layer
+    Gs{end} = 1 / n * G_batch * X_batch{end}';
+    
+    % back-propagate gradient
+    G_batch = ConvNet.W' * G_batch;
+    G_batch(X_batch{end} <= 0) = 0;     % same as multiplying by Ind(H(l)>0)
+    
+    % convolutional layers
+    for l = n_conv_layers:-1:1
+        Gs{l} = zeros(size(ConvNet.F{l}));
+        for j = 1:n
+            g = G_batch(:, j);
+            x = X_batch{l}(:, j);
+            
+            if l == 1 && isfield(ConvNet, 'MX')
+                MX = ConvNet.MX1(:, :, j);      % optimization 1: use pre-computed matrix
+                v = g' * MX;
+            else  
+                [d, k, nf] = size(ConvNet.F{l});
+                MX = MakeMXMatrix(x, d, k, 1);  % optimization 2: M_{x,k} instead of M_{x,k,nf}
+                V = MX' * reshape(g, nf, [])';
+                v = V(:);
+            end
+
+            V = reshape(v, [d, k, nf]);
+            Gs{l} = Gs{l} + 1 / n * V;
+        end
+
+        % back-propagate gradient
+        if l > 1
+            nlen = size(X_batch{l}, 1) / size(ConvNet.F{l}, 1);
+            MF = MakeMFMatrix(ConvNet.F{l}, nlen);
+            
+            G_batch = MF' * G_batch;
+            G_batch(X_batch{l} <= 0) = 0;
+        end
+    end
+end
+
+
+%% Provided functions for numerical computation of gradients
+
+function Gs = NumericalGradient(X_inputs, Ys, ConvNet, h)
+    try_ConvNet = ConvNet;
+    Gs = cell(length(ConvNet.F)+1, 1);
+
+    for l=1:length(ConvNet.F)
+        try_convNet.F{l} = ConvNet.F{l};
+
+        Gs{l} = zeros(size(ConvNet.F{l}));
+        nf = size(ConvNet.F{l},  3);
+
+        for i = 1:nf        
+            try_ConvNet.F{l} = ConvNet.F{l};
+            F_try = squeeze(ConvNet.F{l}(:, :, i));
+            G = zeros(numel(F_try), 1);
+
+            for j=1:numel(F_try)
+                F_try1 = F_try;
+                F_try1(j) = F_try(j) - h;
+                try_ConvNet.F{l}(:, :, i) = F_try1; 
+
+                l1 = ComputeLoss(X_inputs, Ys, try_ConvNet);
+
+                F_try2 = F_try;
+                F_try2(j) = F_try(j) + h;            
+
+                try_ConvNet.F{l}(:, :, i) = F_try2;
+                l2 = ComputeLoss(X_inputs, Ys, try_ConvNet);            
+
+                G(j) = (l2 - l1) / (2*h);
+                try_ConvNet.F{l}(:, :, i) = F_try;
+            end
+            Gs{l}(:, :, i) = reshape(G, size(F_try));
+        end
+    end
+
+    % compute the gradient for the fully connected layer
+    W_try = ConvNet.W;
+    G = zeros(numel(W_try), 1);
+    for j=1:numel(W_try)
+        W_try1 = W_try;
+        W_try1(j) = W_try(j) - h;
+        try_ConvNet.W = W_try1; 
+
+        l1 = ComputeLoss(X_inputs, Ys, try_ConvNet);
+
+        W_try2 = W_try;
+        W_try2(j) = W_try(j) + h;            
+
+        try_ConvNet.W = W_try2;
+        l2 = ComputeLoss(X_inputs, Ys, try_ConvNet);            
+
+        G(j) = (l2 - l1) / (2*h);
+        try_ConvNet.W = W_try;
+    end
+    Gs{end} = reshape(G, size(W_try));
 end
