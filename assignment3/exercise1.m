@@ -6,12 +6,18 @@ rng(1);
 
 dir_dataset = '../datasets/surnames/';
 dir_result_pics = 'result_pics/';
+dir_result_searches = 'result_searches/';
 
-global PRECOMPUTED_MX1;
-global COMPENSATE_UNBALANCED;
+global DEBUG
+global OPTIMIZATIONS;
+global COMPENSATE_IMBALANCE;
+global RANDOM_SEARCH;
 
-PRECOMPUTED_MX1 = false;        % disable if the script crashes for memory reasons
-COMPENSATE_UNBALANCED = true;   % disable only if you want to see the effect of not having it
+DEBUG = false;
+OPTIMIZATIONS.A = true;         % pre-computed M_{x,k,nf} for the first layer
+OPTIMIZATIONS.B = true;         % M_{x,k} instead of M_{x,k,nf}
+COMPENSATE_IMBALANCE = false;    % compensate imbalance of dataset
+RANDOM_SEARCH = false;
 
 
 %% Prepare data
@@ -21,6 +27,7 @@ fprintf('Preparing data...\n\n');
 filename_ascii = [dir_dataset 'ascii_names.mat'];
 filename_encoded = [dir_dataset 'encoded_names.mat'];
 filename_validation = [dir_dataset 'Validation_Inds.txt'];
+filename_languages = [dir_dataset 'category_labels.txt'];
 
 % load ascii names
 if ~isfile(filename_ascii)
@@ -43,11 +50,224 @@ char_to_ind = containers.Map(num2cell(C), 1:length(C));
 
 % encode
 if ~isfile(filename_encoded)
+    [X, Ys] = EncodeNames(all_names, ys, d, n_len, K, char_to_ind);
+    save(filename_encoded, 'X', 'Ys');
+else
+    aux = load(filename_encoded);
+    X = aux.X;
+    Ys = aux.Ys;
+end
+
+% load languages (class labels)
+fid = fopen(filename_languages);
+languages = textscan(fid, '%*d %s');
+fclose(fid);
+languages = languages{1};
+
+% partition in training and validation set
+fid = fopen(filename_validation);
+validation_idx = fscanf(fid, '%d');
+fclose(fid);
+ValidationSet.X = X(:, validation_idx);
+ValidationSet.Ys = Ys(:, validation_idx);
+ValidationSet.ys = ys(validation_idx)';
+TrainingSet.X = X;
+TrainingSet.Ys = Ys;
+TrainingSet.ys = ys';
+TrainingSet.X(:, validation_idx) = [];
+TrainingSet.Ys(:, validation_idx) = [];
+TrainingSet.ys(validation_idx) = [];
+
+% shuffle training set
+idx = 1:size(TrainingSet.X, 2);
+idx = idx(randperm(length(idx)));
+TrainingSet.X = TrainingSet.X(:, idx);
+TrainingSet.Ys = TrainingSet.Ys(:, idx);
+TrainingSet.ys = TrainingSet.ys(idx);
+
+% examine data
+y = zeros(K, 2);
+for k = 1:K
+    y(k, 1) = numel(find(TrainingSet.ys == k));
+    y(k, 2) = numel(find(ValidationSet.ys == k));
+end
+x = categorical(languages);
+f = figure();
+bar(x, y);
+set(gca,'TickLength',[0 0])
+set(gca, 'YScale', 'log')
+saveas(f, [dir_result_pics 'dataset.jpg']);
+
+
+%% Check convolutional matrices
+
+if DEBUG
+    disp('Checking convolution matrices...');
+
+    filename = 'DebugInfo.mat';
+
+    debug = load(filename);
+
+    [d_debug, k_debug, nf_debug] = size(debug.F);
+    n_len_debug = size(debug.X_input, 2);
+
+    MX = MakeMXMatrix(debug.x_input, d_debug, k_debug, nf_debug);
+    MF = MakeMFMatrix(debug.F, n_len_debug);
+
+    s1 = MX * debug.F(:);
+    s2 = MF * debug.x_input;
+
+    disp([s1, s2, debug.vecS]);
+end
+
+
+%% Check gradients
+
+if DEBUG
+    disp('Checking gradients...');
+
+    batch_size_debug = 3;
+    conv_layer_sizes_debug = [5, 5; 5, 5];  % 1 row per layer with format [k, nf]
+    
+    TrainingSet_debug.X = TrainingSet.X(:, 1:batch_size_debug);
+    TrainingSet_debug.Ys = TrainingSet.Ys(:, 1:batch_size_debug);
+    TrainingSet_debug.ys = TrainingSet.ys(1:batch_size_debug);
+
+    ConvNet_debug = InitConvNet(conv_layer_sizes_debug, d, n_len, K);
+    if OPTIMIZATIONS.A
+        ConvNet_debug.MX1 = PrecomputeMX1(TrainingSet_debug.X, ConvNet_debug.F{1});
+    end
+    [P, X] = EvaluateClassifier(TrainingSet_debug.X, ConvNet_debug);
+
+    Gs = ComputeGradients(X, TrainingSet_debug.Ys, TrainingSet_debug.ys, P, ConvNet_debug);
+    Gs_num = NumericalGradient(TrainingSet_debug.X, TrainingSet_debug.Ys, TrainingSet_debug.ys, ConvNet_debug, 1e-6);
+
+    for l = 1:size(conv_layer_sizes_debug, 1)
+        fprintf('Max absolute error grad_F%d: %e\n', l, max(abs(Gs{l} - Gs_num{l}), [], 'all'));
+        fprintf('Max relative error grad_F%d: %e\n', l, max(abs(Gs{l} - Gs_num{l}) ./ max(eps, abs(Gs{l}) + abs(Gs_num{l})), [], 'all'));
+    end
+    fprintf('Max absolute error grad_W: %e\n', max(abs(Gs{end} - Gs_num{end}), [], 'all'));
+    fprintf('Max relative error grad_W: %e\n', max(abs(Gs{end} - Gs_num{end}) ./ max(eps, abs(Gs{end}) + abs(Gs_num{end})), [], 'all'));
+    fprintf('\n');
+end
+
+
+%% Random search
+
+if RANDOM_SEARCH
+    disp('Random searching...');
+
+    filename = 'random_search.txt';
+
+    % random search
+    n_trials = 20;
+    n_updates = 500;
+
+    % learning rate
+    eta_min = -4;
+    eta_max = -1;
+    eta = eta_min + (eta_max - eta_min) * rand(n_trials, 1);
+    eta = 10.^eta;      % log scale
+
+    % batch size
+    batch_size_min = 1;
+    batch_size_max = 500;
+    batch_size = randi([batch_size_min, batch_size_max], [n_trials, 1]);
+
+    % architecture
+    conv_layer_sizes_min = [1, 1; 1, 1];    % 1 row per layer with format [k, nf]
+    conv_layer_sizes_max = [n_len, 100; n_len, 100];
+    conv_layer_sizes = zeros([size(conv_layer_sizes_min), n_trials]);
+    n_conv_layers = size(conv_layer_sizes, 1);
+    for r = 1:size(conv_layer_sizes, 1)
+        for c = 1:size(conv_layer_sizes, 2)
+            cl_min = conv_layer_sizes_min(r, c);
+            cl_max = conv_layer_sizes_max(r, c);
+            conv_layer_sizes(r, c, :) = randi([cl_min, cl_max], [1, 1, n_trials]);
+        end
+    end
+
+    % train and save results
+    fileID = fopen([dir_result_searches filename], 'a');
+    n = size(TrainingSet.X, 2);
+    for iTrial = 1:n_trials
+        % train
+        fprintf('eta=%f, batch_size=%d', eta(iTrial), batch_size(iTrial));
+        for iLayer = 1:n_conv_layers
+            fprintf(', k%d=%d n%d=%d', iLayer, conv_layer_sizes(iLayer, 1, iTrial), iLayer, conv_layer_sizes(iLayer, 2, iTrial));
+        end
+        fprintf(' - training... ');
+
+        GDparams = struct('eta', eta(iTrial), 'rho', .9, 'batch_size', batch_size(iTrial), 'epochs', round(n_updates * batch_size(iTrial) / n));
+        ConvNet = InitConvNet(conv_layer_sizes(:, :, iTrial), d, n_len, K);
+        ConvNet = MiniBatchGD(TrainingSet, ValidationSet, GDparams, ConvNet);
+
+        % test and save
+        acc = ComputeAccuracy(ValidationSet.X, ValidationSet.ys, ConvNet);
+        fprintf(fileID, 'eta=%f, batch_size=%d', eta(iTrial), batch_size(iTrial));
+        for iLayer = 1:n_conv_layers
+            fprintf(fileID, ', k%d=%d n%d=%d', iLayer, conv_layer_sizes(iLayer, 1, iTrial), iLayer, conv_layer_sizes(iLayer, 2, iTrial));
+        end
+        fprintf(fileID, ' - validation accuracy %.2f%%\n', acc*100);
+        fprintf('done\n');
+    end
+    fprintf(fileID, '\n\n\n');
+    fclose(fileID);
+    fprintf('\n');
+    return
+end
+
+
+%% Train best network
+
+disp('Training best network...');
+
+% ConvNet architecture
+conv_layer_sizes = [5, 20; 3, 20];  % 1 row per layer with format [k, nf]
+
+% train
+GDparams = struct('eta', .001, 'rho', .9, 'batch_size', 100, 'epochs', 120, 'n_update', 500);
+ConvNet = InitConvNet(conv_layer_sizes, d, n_len, K);
+[ConvNet, f_loss, f_acc] = MiniBatchGD(TrainingSet, ValidationSet, GDparams, ConvNet);
+saveas(f_loss, [dir_result_pics 'loss.jpg']);
+saveas(f_acc, [dir_result_pics 'accuracy.jpg']);
+
+% accuracy (on validation set, not test set, see instructions)
+acc = ComputeAccuracy(ValidationSet.X, ValidationSet.ys, ConvNet);
+fprintf('Accuracy (validation set): %.2f%%\n', acc*100);
+
+% confusion matrix (on validation set, not test set, see instructions)
+CM = ComputeConfusionMatrix(ValidationSet.X, ValidationSet.ys, ConvNet);
+f_cm = figure();
+confusionchart(CM, languages);
+saveas(f_cm, [dir_result_pics 'confusion_matrix.jpg']);
+fprintf('Confusion matrix (validation set)\n');
+disp(CM);
+
+% predict my surname and those of my friends
+names = {'ruggeri', 'migliore', 'rosso', 'frdr', 'siyuan', 'gonzales'};
+ys = [10, 10, 10, 7, 2, 17];
+[X, Ys] = EncodeNames(names, ys, d, n_len, K, char_to_ind);
+P = EvaluateClassifier(X, ConvNet);
+[~, ypred] = max(P);
+fprintf('Predictions of some new surnames\n');
+for iName = 1:length(names)
+    fprintf('%s\n', names{iName});
+    fprintf('prediction: %s (%.2f)\n', languages{ypred(iName)}, P(ypred(iName), iName));
+    fprintf('true: %s (%.2f)\n\n', languages{ys(iName)}, P(ys(iName), iName));
+end
+fprintf('Probabilities:\n');
+disp(P);
+
+
+%% Functions
+
+function [X, Ys] = EncodeNames(names, ys, d, n_len, K, char_to_ind)
+    N = length(names);
     X = zeros(d*n_len, N);
     
-    % encode names
     for iName = 1:N
-        name = all_names{iName};
+        name = names{iName};
 
         % one-hot encoding
         encoded_name = zeros(d, n_len);
@@ -69,109 +289,31 @@ if ~isfile(filename_encoded)
     for n = 1:N
         Ys(ys(n), n) = 1;
     end
-
-    % save
-    save(filename_encoded, 'X', 'Ys');
-else
-    aux = load(filename_encoded);
-    X = aux.X;
-    Ys = aux.Ys;
 end
 
-% partition in training and validation set
-fid = fopen(filename_validation);
-validation_idx = split(fgets(fid));
-fclose(fid);
-validation_idx = validation_idx(1:end-1);   % the last one is a space
-for iIdx = 1:length(validation_idx)
-    validation_idx{iIdx} = str2double(validation_idx{iIdx});
+function ConvNet = InitConvNet(conv_layer_sizes, d, n_len, K)
+    % convolutional layers
+    for l = 1:size(conv_layer_sizes)
+        k = conv_layer_sizes(l, 1);
+        nf = conv_layer_sizes(l, 2);
+        
+        % He initialization
+        if l == 1
+            sig = 1 / sqrt(k);  % modified for the first layer (see note)
+        else
+            sig = sqrt(2 / (d*k));
+        end
+        ConvNet.F{l} = randn(d, k, nf) * sig;
+        
+        n_len = n_len - k + 1;  % keep track for FC layer
+        d = nf;                 % keep track for next convolutional layer
+    end
+    
+    % fully connected layer
+    nf = conv_layer_sizes(end, 2);
+    sig = sqrt(2 / (nf*n_len));
+    ConvNet.W = randn(K, nf*n_len) * sig;
 end
-validation_idx = cell2mat(validation_idx);
-ValidationSet.X = X(:, validation_idx);
-ValidationSet.ys = ys(validation_idx)';
-ValidationSet.Ys = Ys(:, validation_idx);
-TrainingSet.X = X;
-TrainingSet.ys = ys';
-TrainingSet.Ys = Ys;
-TrainingSet.X(:, validation_idx) = [];
-TrainingSet.ys(validation_idx) = [];
-TrainingSet.Ys(:, validation_idx) = [];
-
-
-%% ConvNet architecture
-
-% 1 row per layer with format (k, nf) = (width, number of filter)
-conv_layer_sizes = [
-    5 20
-    3 20
-];
-
-
-%% Check convolutional matrices
-
-disp('Checking convolution matrices...');
-
-filename = 'DebugInfo.mat';
-
-debug = load(filename);
-
-[d_, k_, nf_] = size(debug.F);
-n_len_ = size(debug.X_input, 2);
-
-MX = MakeMXMatrix(debug.x_input, d_, k_, nf_);
-MF = MakeMFMatrix(debug.F, n_len_);
-
-s1 = MX * debug.F(:);
-s2 = MF * debug.x_input;
-
-disp([s1, s2, debug.vecS]);
-
-
-%% Check gradients
-
-disp('Checking gradients...');
-
-n_batch_ = 3;
-
-trainX = TrainingSet.X(:, 1:n_batch_);
-trainYs = TrainingSet.Ys(:, 1:n_batch_);
-
-ConvNet = InitConvNet(conv_layer_sizes, d, n_len, K);
-[P, X] = EvaluateClassifier(trainX, ConvNet);
-
-Gs = ComputeGradients(X, trainYs, P, ConvNet);
-Gs_num = NumericalGradient(trainX, trainYs, ConvNet, 1e-6);
-
-for l = 1:size(conv_layer_sizes, 1)
-    fprintf('Max absolute error grad_F%d: %e\n', l, max(abs(Gs{l} - Gs_num{l}), [], 'all'));
-    fprintf('Max relative error grad_F%d: %e\n', l, max(abs(Gs{l} - Gs_num{l}) ./ max(eps, abs(Gs{l}) + abs(Gs_num{l})), [], 'all'));
-end
-fprintf('Max absolute error grad_W: %e\n', max(abs(Gs{end} - Gs_num{end}), [], 'all'));
-fprintf('Max relative error grad_W: %e\n', max(abs(Gs{end} - Gs_num{end}) ./ max(eps, abs(Gs{end}) + abs(Gs_num{end})), [], 'all'));
-fprintf('\n');
-
-
-%% Train and test
-
-disp('Training...');
-
-% train
-GDparams = struct('eta', .005, 'rho', .9, 'n_batch', 100, 'max_iter', 50000, 'n_update', 500);
-ConvNet = InitConvNet(conv_layer_sizes, d, n_len, K);
-[ConvNet, f_loss, f_acc] = MiniBatchGD(TrainingSet, ValidationSet, GDparams, ConvNet);
-saveas(f_loss, [dir_result_pics 'loss.jpg']);
-saveas(f_acc, [dir_result_pics 'accuracy.jpg']);
-
-% validation accuracy (not test accuracy, see instructions)
-acc = ComputeAccuracy(ValidationSet.X, ValidationSet.ys, ConvNet);
-fprintf('Accuracy (validation set): %.2f%%\n', acc*100);
-
-% confusion matrix
-fprintf('Confusion matrix (validation set)\n');
-disp(ComputeConfusionMatrix(ValidationSet.X, ValidationSet.ys, ConvNet));
-
-
-%% Convolutional matrices
 
 function MF = MakeMFMatrix(F, nlen)
     [d, k, nf] = size(F);
@@ -211,13 +353,10 @@ function MX = MakeMXMatrix(x_input, d, k, nf)
     end
 end
 
-
-%% Mini-batch GD with momentum
-
 function [P_batch, X_batch] = EvaluateClassifier(X_batch, ConvNet)
     n_conv_layers = length(ConvNet.F);
     n_len = size(X_batch, 1) / size(ConvNet.F{1}, 1);
-    X_batch = [X_batch; cell(n_conv_layers-1, 1)];
+    X_batch = [X_batch; cell(n_conv_layers, 1)];
     
     % convolutional layers
     for l = 1:n_conv_layers
@@ -225,35 +364,45 @@ function [P_batch, X_batch] = EvaluateClassifier(X_batch, ConvNet)
         X_batch{l+1} = max(0, MF * X_batch{l});
         n_len = n_len - size(ConvNet.F{l}, 2) + 1;
     end
-
+    
     % fully connected layer
     S_batch = ConvNet.W * X_batch{end};
     expS_batch = exp(S_batch);
     P_batch = expS_batch ./ sum(expS_batch);
 end
 
-function loss = ComputeLoss(X_batch, Ys_batch, ConvNet)
-    P = EvaluateClassifier(X_batch, ConvNet);
-    
-    % loss for each sample
-    N = size(X_batch, 2);
-    l = zeros(1, N);
-    for n = 1:N
-        l(n) = -log(Ys_batch(:, n)' * P(:, n));
+function loss = ComputeLoss(X_batch, Ys_batch, ys_batch, ConvNet, class_weight)
+    if nargin < 5
+        class_weight = ones(size(ConvNet.W, 1), 1);
     end
+
+    P = EvaluateClassifier(X_batch, ConvNet);
+    n = size(X_batch, 2);
     
-    % loss for batch
-    loss = 1 / length(l) * sum(l);
+    loss = 0;
+    for j = 1:n
+        loss = loss - class_weight(ys_batch(j)) * log(Ys_batch(:, j)' * P(:, j));
+    end
+    loss = loss / n;
 end
 
-function Gs = ComputeGradients(X_batch, Ys_batch, P_batch, ConvNet)
+function Gs = ComputeGradients(X_batch, Ys_batch, ys_batch, P_batch, ConvNet, class_weight)
+    global OPTIMIZATIONS
+    
+    if nargin < 6
+        class_weight = ones(size(ConvNet.W, 1), 1);
+    end
+    
     n = size(X_batch{1}, 2);
     n_conv_layers = length(ConvNet.F);
     Gs = cell(n_conv_layers+1, 1);
     G_batch = P_batch - Ys_batch;
 
     % fully connected layer
-    Gs{end} = 1 / n * G_batch * X_batch{end}';
+    Gs{end} = zeros(size(ConvNet.W));
+    for j = 1:n
+        Gs{end} = Gs{end} + 1/n * class_weight(ys_batch(j)) * G_batch(:, j) * X_batch{end}(:, j)';
+    end
     
     % back-propagate gradient
     G_batch = ConvNet.W' * G_batch;
@@ -262,22 +411,29 @@ function Gs = ComputeGradients(X_batch, Ys_batch, P_batch, ConvNet)
     % convolutional layers
     for l = n_conv_layers:-1:1
         Gs{l} = zeros(size(ConvNet.F{l}));
+        [d, k, nf] = size(ConvNet.F{l});
+        
         for j = 1:n
             g = G_batch(:, j);
             x = X_batch{l}(:, j);
             
-            if l == 1 && isfield(ConvNet, 'MX')
-                MX = ConvNet.MX1(:, :, j);      % optimization 1: use pre-computed matrix
-                v = g' * MX;
-            else  
-                [d, k, nf] = size(ConvNet.F{l});
-                MX = MakeMXMatrix(x, d, k, 1);  % optimization 2: M_{x,k} instead of M_{x,k,nf}
+            if OPTIMIZATIONS.A && l == 1 && isfield(ConvNet, 'MX1')
+                MX = ConvNet.MX1(:, :, j);          % pre-computed M_{x,k,nf} for the first layer
+            elseif OPTIMIZATIONS.B
+                MX = MakeMXMatrix(x, d, k, 1);      % M_{x,k} instead of M_{x,k,nf}
+            else
+                MX = MakeMXMatrix(x, d, k, nf);
+            end
+            
+            if OPTIMIZATIONS.B
                 V = MX' * reshape(g, nf, [])';
                 v = V(:);
+            else
+                v = g' * MX;
             end
-
+            
             V = reshape(v, [d, k, nf]);
-            Gs{l} = Gs{l} + 1 / n * V;
+            Gs{l} = Gs{l} + 1/n * class_weight(ys_batch(j)) * V;
         end
 
         % back-propagate gradient
@@ -292,147 +448,167 @@ function Gs = ComputeGradients(X_batch, Ys_batch, P_batch, ConvNet)
 end
 
 function [ConvNet, f_loss, f_acc] = MiniBatchGD(TrainingSet, ValidationSet, GDparams, ConvNet)
-    global PRECOMPUTED_MX1;
-    global COMPENSATE_UNBALANCED;
+    global OPTIMIZATIONS;
+    global COMPENSATE_IMBALANCE;
+    global RANDOM_SEARCH
     
-    n_conv_layers = length(ConvNet.F);
-    K = size(TrainingSet.Ys, 1);
-    if COMPENSATE_UNBALANCED
-        n_per_class = FindSmallestClass(TrainingSet);
-        n = n_per_class * K;
-    else
+    if OPTIMIZATIONS.A
+        ConvNet.MX1 = PrecomputeMX1(TrainingSet.X, ConvNet.F{1});
+    end
+    
+    % class weights
+    K = size(ConvNet.W, 1);
+    if COMPENSATE_IMBALANCE
+        class_weight = zeros(K, 1);
         n = size(TrainingSet.X, 2);
-        
-        % optimization 1: pre-compute MX for the first layer
-        if PRECOMPUTED_MX1
-            PrecomputeMX1(TrainingSet, ConvNet.F{1});
+        for k = 1:K
+            ny = length(find(TrainingSet.ys == k));
+            class_weight(k) = n / (K * ny);
         end
+    else
+        class_weight = ones(K, 1);
     end
     
     % get hyper-parameters
-    n_batch = GDparams.n_batch;         % size of mini-batches
-    iter_per_epoch = floor(n/n_batch);  % number of mini-batches in the training set
-    eta = GDparams.eta;
-    rho = GDparams.rho;
-    max_iter = GDparams.max_iter;
-    n_update = GDparams.n_update;       % compute stats every n_update
-
-    % stats
-    n_measures = floor(max_iter / n_update);
-    losses_train = [ComputeLoss(TrainingSet.X, TrainingSet.Ys, ConvNet), zeros(1, n_measures)];
-    losses_val = [ComputeLoss(ValidationSet.X, ValidationSet.Ys, ConvNet), zeros(1, n_measures)];
-    acc_train = [ComputeAccuracy(TrainingSet.X, TrainingSet.ys, ConvNet), zeros(1, n_measures)];
-    acc_val = [ComputeAccuracy(ValidationSet.X, ValidationSet.ys, ConvNet), zeros(1, n_measures)];
-    measured_updates = [0, zeros(1, floor(max_iter/n_update))];
-    idx_measure = 2;
-    fprintf('Confusion matrix (validation set, iteration %d of %d)\n', 0, max_iter);
-    disp(ComputeConfusionMatrix(ValidationSet.X, ValidationSet.ys, ConvNet));
+    batch_size = GDparams.batch_size;
+    epochs = GDparams.epochs;
+    eta = GDparams.eta;                     % learning rate
+    rho = GDparams.rho;                 	% momentum term
     
-    % init momentum
+    % other sizes
+    n = size(TrainingSet.X, 2);
+    n_batches = floor(n / batch_size);      % number of mini-batches
+    n_conv_layers = length(ConvNet.F);
+    max_update = epochs * n_batches;
+    
+    if ~RANDOM_SEARCH
+        % stats
+        n_update = GDparams.n_update;       % compute stats every n_update
+        n_measures = floor(max_update / n_update);
+        losses_train = [ComputeLoss(TrainingSet.X, TrainingSet.Ys, TrainingSet.ys, ConvNet, class_weight), zeros(1, n_measures+1)];
+        losses_val = [ComputeLoss(ValidationSet.X, ValidationSet.Ys, ValidationSet.ys, ConvNet), zeros(1, n_measures+1)];
+        acc_train = [ComputeAccuracy(TrainingSet.X, TrainingSet.ys, ConvNet), zeros(1, n_measures+1)];
+        acc_val = [ComputeAccuracy(ValidationSet.X, ValidationSet.ys, ConvNet), zeros(1, n_measures+1)];
+        measured_updates = [0, zeros(1, n_measures+1)];
+        fprintf('Confusion matrix (validation set, update %d of %d)\n', 0, max_update);
+        disp(ComputeConfusionMatrix(ValidationSet.X, ValidationSet.ys, ConvNet));
+        idx_measure = 2;
+        count_update = 1;
+    end
+    
+	% init momentum
     V = cell(n_conv_layers+1, 1);
     for l = 1:n_conv_layers
         V{l} = zeros(size(ConvNet.F{l}));
     end
     V{end} = zeros(size(ConvNet.W));
     
-    for t = 1:max_iter
-        % new epoch => resample
-        if COMPENSATE_UNBALANCED && mod(t-1, iter_per_epoch) == 0
-            TrainingSet_ = SubSample(TrainingSet, n);
+    % keep record of best network
+    ConvNet_best = ConvNet;
+    best_val_loss = Inf;
+    
+    for epoch = 1:epochs
+        % shuffle data
+        idx = 1:n;
+        idx = idx(randperm(length(idx)));
+        TrainingSet.X = TrainingSet.X(:, idx);
+        TrainingSet.Ys = TrainingSet.Ys(:, idx);
+        TrainingSet.ys = TrainingSet.ys(idx);
+        if OPTIMIZATIONS.A
+            ConvNet.MX1 = ConvNet.MX1(:, :, idx);
+        end
+        
+        for batch = 1:n_batches
+            % select batch
+            idx_start = (batch-1) * batch_size + 1;
+            idx_end = batch * batch_size;
+            idx = idx_start:idx_end;
+            X_batch = TrainingSet.X(:, idx);
+            Ys_batch = TrainingSet.Ys(:, idx);
+            ys_batch = TrainingSet.ys(idx);
+        
+            % forward pass
+            [P_batch, X_batch] = EvaluateClassifier(X_batch, ConvNet);
 
-            % optimization 1: pre-compute MX for the first layer
-            if PRECOMPUTED_MX1
-                MX1 = PrecomputeMX1(TrainingSet_, ConvNet.F{1});
+            % backward pass
+            Gs = ComputeGradients(X_batch, Ys_batch, ys_batch, P_batch, ConvNet, class_weight);
+
+            % update convolutional layers
+            for l = 1:n_conv_layers
+                V{l} = rho * V{l} + eta * Gs{l};
+                ConvNet.F{l} = ConvNet.F{l} - V{l};
             end
-        else
-            TrainingSet_ = TrainingSet;
-        end
-
-        % select minibatch
-        batch = mod(t-1, iter_per_epoch) + 1;
-        idx_start = (batch-1) * n_batch + 1;
-        idx_end = batch * n_batch;
-        idx = idx_start:idx_end;
-        X_batch = TrainingSet_.X(:, idx);
-        Ys_batch = TrainingSet_.Ys(:, idx);
-        if PRECOMPUTED_MX1
-            ConvNet.MX1 = MX1(idx);
-        end
         
-        % forward pass
-        [P_batch, X_batch] = EvaluateClassifier(X_batch, ConvNet);
+            % update fully connected layer
+            V{end} = rho * V{end} + eta * Gs{end};
+            ConvNet.W = ConvNet.W - V{end};
 
-        % backward pass
-        Gs = ComputeGradients(X_batch, Ys_batch, P_batch, ConvNet);
-
-        % update convolutional layers
-        for l = 1:n_conv_layers
-            V{l} = rho * V{l} + eta * Gs{l};
-            ConvNet.F{l} = ConvNet.F{l} - V{l};
-        end
-        
-        % update fully connected layer
-        V{end} = rho * V{end} + eta * Gs{end};
-        ConvNet.W = ConvNet.W - V{end};
-
-        % stats
-        if mod(t, n_update) == 0
-            losses_train(idx_measure) = ComputeLoss(TrainingSet.X, TrainingSet.Ys, ConvNet);
-            losses_val(idx_measure) = ComputeLoss(ValidationSet.X, ValidationSet.Ys, ConvNet);
-            acc_train(idx_measure) = ComputeAccuracy(TrainingSet.X, TrainingSet.ys, ConvNet);
-            acc_val(idx_measure) = ComputeAccuracy(ValidationSet.X, ValidationSet.ys, ConvNet);
-            measured_updates(idx_measure) = t;
-            idx_measure = idx_measure + 1;
+            % update best network
+            val_loss = ComputeLoss(ValidationSet.X, ValidationSet.Ys, ValidationSet.ys, ConvNet);
+            if val_loss < best_val_loss
+                ConvNet_best = ConvNet;
+                best_val_loss = val_loss;
+            end
             
-            % confusion matrix
-            fprintf('Confusion matrix (validation set, iteration %d of %d)\n', t, max_iter);
-            disp(ComputeConfusionMatrix(ValidationSet.X, ValidationSet.ys, ConvNet));
+            if ~RANDOM_SEARCH
+                % stats
+                if mod(count_update, n_update) == 0 || count_update == max_update
+                    losses_train(idx_measure) = ComputeLoss(TrainingSet.X, TrainingSet.Ys, TrainingSet.ys, ConvNet, class_weight);
+                    losses_val(idx_measure) = val_loss;
+                    acc_train(idx_measure) = ComputeAccuracy(TrainingSet.X, TrainingSet.ys, ConvNet);
+                    acc_val(idx_measure) = ComputeAccuracy(ValidationSet.X, ValidationSet.ys, ConvNet);
+                    measured_updates(idx_measure) = count_update;
+                    idx_measure = idx_measure + 1;
+
+                    % confusion matrix
+                    fprintf('Confusion matrix (validation set, iteration %d of %d)\n', count_update, max_update);
+                    disp(ComputeConfusionMatrix(ValidationSet.X, ValidationSet.ys, ConvNet));
+                end
+                count_update = count_update + 1;
+            end
         end
-        
-%         fprintf('Iteration %d of %d\n completed', t, max_iter);
     end
+    ConvNet = ConvNet_best;
     
-    % plot loss curve
-    f_loss = figure();
-    hold on
-    plot(measured_updates, losses_train, 'linewidth', 2);
-    plot(measured_updates, losses_val, 'linewidth', 2);
-    xlabel('update step');
-    ylabel('loss');
-    legend('training', 'validation');
-    
-    % plot accuracy
-    f_acc = figure();
-    hold on
-    plot(measured_updates, acc_train, 'linewidth', 2);
-    plot(measured_updates, acc_val, 'linewidth', 2);
-    xlabel('update step');
-    ylabel('accuracy');
-    legend('training', 'validation');
+    if ~RANDOM_SEARCH
+        % plot loss curve
+        f_loss = figure();
+        hold on
+        plot(measured_updates, losses_train, 'linewidth', 2);
+        plot(measured_updates, losses_val, 'linewidth', 2);
+        xlabel('update step');
+        ylabel('loss');
+        legend('training', 'validation');
+
+        % plot accuracy
+        f_acc = figure();
+        hold on
+        plot(measured_updates, acc_train, 'linewidth', 2);
+        plot(measured_updates, acc_val, 'linewidth', 2);
+        xlabel('update step');
+        ylabel('accuracy');
+        legend('training', 'validation');
+    end
 end
 
-
-%% Evaluation metrics
-
-function acc = ComputeAccuracy(X, y, ConvNet)
-    P = EvaluateClassifier(X, ConvNet);
-    [~, ypred] = max(P);
-    nCorrect = length(find(ypred == y));
-    nTot = size(X, 2);
+function acc = ComputeAccuracy(X_batch, ys_batch, ConvNet)
+    P_batch = EvaluateClassifier(X_batch, ConvNet);
+    [~, ypred] = max(P_batch);
+    nCorrect = length(find(ypred == ys_batch));
+    nTot = size(X_batch, 2);
     acc = nCorrect / nTot;
 end
 
-function CM = ComputeConfusionMatrix(X, y, ConvNet)
+function CM = ComputeConfusionMatrix(X_batch, ys_batch, ConvNet)
     K = size(ConvNet.W, 1);
-    
-    P = EvaluateClassifier(X, ConvNet);
+    P = EvaluateClassifier(X_batch, ConvNet);
     [~, ypred] = max(P);
     
     CM = zeros(K);
     for k1 = 1:K
         % data belonging to class k1
-        idx = find(y == k1);
-        
+        idx = ys_batch == k1;
+
         for k2 = 1:K
             % # data belonging to class k1 and predicted as class k2
             n_pred = length(find(ypred(idx) == k2));
@@ -441,81 +617,29 @@ function CM = ComputeConfusionMatrix(X, y, ConvNet)
     end
 end
 
+function MX1 = PrecomputeMX1(X, F1)
+    global OPTIMIZATIONS
 
-%% Utility functions
-
-function ConvNet = InitConvNet(conv_layer_sizes, d, n_len, K)
-    % convolutional layers
-    for l = 1:size(conv_layer_sizes)
-        k = conv_layer_sizes(l, 1);
-        nf = conv_layer_sizes(l, 2);
-        
-        % He initialization
-        if l == 1
-            sig = 1 / sqrt(k);  % modified for the first layer (see note)
-        else
-            sig = sqrt(2 / (n_len*k));
-        end
-        ConvNet.F{l} = randn(d, k, nf) * sig;
-        
-        n_len = n_len - k + 1;  % keep track for FC layer
-        d = nf;                 % keep track for next convolutional layer
-    end
-    
-    % fully connected layer
-    nf = conv_layer_sizes(end, 2);
-    sig = sqrt(2 / (nf*n_len));
-    ConvNet.W = randn(K, nf*n_len) * sig;
-end
-
-function SubDataset = SubSample(Dataset, n)
-    K = size(Dataset.Ys, 1);
-    d = size(Dataset.X, 1);
-    n_per_class = round(n / K);
-    SubDataset = struct('X', zeros(d, n), 'Ys', zeros(K, n), 'ys', zeros(1, n));
-    
-    for k = 1:K
-        % sample
-        idx = find(Dataset.ys == k);
-        idx = idx(randperm(length(idx), n_per_class));
-        
-        % add to new dataset
-        idx_start = 1+(k-1)*n_per_class;
-        idx_end = idx_start + n_per_class - 1;
-        SubDataset.X(:, idx_start:idx_end) = Dataset.X(:, idx);
-        SubDataset.Ys(:, idx_start:idx_end) = Dataset.Ys(:, idx);
-        SubDataset.ys(idx_start:idx_end) = Dataset.ys(idx);
-    end
-end
-
-function [n_samples, class] = FindSmallestClass(Dataset)
-    K = size(Dataset.Ys, 1);
-    n_samples = Inf;
-    for k = 1:K
-        idx = find(Dataset.ys == k);
-        aux = length(find(Dataset.ys == k));
-        if aux < n_samples
-            n_samples = aux;
-            class = k;
-        end
-    end
-end
-
-function MX1 = PrecomputeMX1(TrainingSet, F1)
     [d, k, nf] = size(F1);
-    nlen = size(TrainingSet.X, 1) / d;
-    n = size(TrainingSet.X, 2);
+    nlen = size(X, 1) / d;
+    n = size(X, 2);
+    if OPTIMIZATIONS.B
+        nf = 1;     % M_{x,k} instead of M_{x,k,nf}
+    end
+
+    % these matrices contain 0s and 1s, we can store booleans to occupy less memory
+    MX1 = false((nlen-k+1)*nf, d*k*nf, n);
     
-    MX1 = zeros((nlen-k+1)*nf, d*k*nf, n);
     for j = 1:n
-        MX1(:, :, j) = MakeMXMatrix(TrainingSet.X(:, j), d, k, nf);
+        MX = MakeMXMatrix(X(:, j), d, k, nf);
+        MX1(:, :, j) = logical(MX);
     end
 end
 
 
-%% Numerical computation of gradients (provided)
+%% Provided function for numerical computation of gradients
 
-function Gs = NumericalGradient(X_inputs, Ys, ConvNet, h)
+function Gs = NumericalGradient(X_inputs, Ys, ys, ConvNet, h)
     try_ConvNet = ConvNet;
     Gs = cell(length(ConvNet.F)+1, 1);
 
@@ -535,13 +659,13 @@ function Gs = NumericalGradient(X_inputs, Ys, ConvNet, h)
                 F_try1(j) = F_try(j) - h;
                 try_ConvNet.F{l}(:, :, i) = F_try1; 
 
-                l1 = ComputeLoss(X_inputs, Ys, try_ConvNet);
+                l1 = ComputeLoss(X_inputs, Ys, ys, try_ConvNet);
 
                 F_try2 = F_try;
                 F_try2(j) = F_try(j) + h;            
 
                 try_ConvNet.F{l}(:, :, i) = F_try2;
-                l2 = ComputeLoss(X_inputs, Ys, try_ConvNet);            
+                l2 = ComputeLoss(X_inputs, Ys, ys, try_ConvNet);            
 
                 G(j) = (l2 - l1) / (2*h);
                 try_ConvNet.F{l}(:, :, i) = F_try;
@@ -558,13 +682,13 @@ function Gs = NumericalGradient(X_inputs, Ys, ConvNet, h)
         W_try1(j) = W_try(j) - h;
         try_ConvNet.W = W_try1; 
 
-        l1 = ComputeLoss(X_inputs, Ys, try_ConvNet);
+        l1 = ComputeLoss(X_inputs, Ys, ys, try_ConvNet);
 
         W_try2 = W_try;
         W_try2(j) = W_try(j) + h;            
 
         try_ConvNet.W = W_try2;
-        l2 = ComputeLoss(X_inputs, Ys, try_ConvNet);            
+        l2 = ComputeLoss(X_inputs, Ys, ys, try_ConvNet);            
 
         G(j) = (l2 - l1) / (2*h);
         try_ConvNet.W = W_try;
