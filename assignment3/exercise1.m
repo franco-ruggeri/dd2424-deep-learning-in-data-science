@@ -159,24 +159,24 @@ if RANDOM_SEARCH
 
     filename = 'random_search.txt';
 
-    n_trials = 20;
-    n_updates = 500;
+    n_trials = 10;
+    n_updates = 1000;
     n_smallest_class = FindSmallestClass(TrainingSet.ys, K);
 
     % learning rate
-    eta_min = -4;
-    eta_max = -1;
+    eta_min = -3;
+    eta_max = -3;
     eta = eta_min + (eta_max - eta_min) * rand(n_trials, 1);
     eta = 10.^eta;      % log scale
 
     % batch size
-    batch_size_min = 1;
-    batch_size_max = 500;
+    batch_size_min = 100;
+    batch_size_max = 100;
     batch_size = randi([batch_size_min, batch_size_max], [n_trials, 1]);
 
     % architecture
     conv_layer_sizes_min = [1, 1; 1, 1];    % 1 row per layer with format [k, nf]
-    conv_layer_sizes_max = [n_len, 100; n_len, 100];
+    conv_layer_sizes_max = [10, 100; 10, 100];
     conv_layer_sizes = zeros([size(conv_layer_sizes_min), n_trials]);
     n_conv_layers = size(conv_layer_sizes, 1);
     for r = 1:size(conv_layer_sizes, 1)
@@ -228,11 +228,11 @@ end
 disp('Training best network...');
 
 % ConvNet architecture
-conv_layer_sizes = [5, 20; 3, 20];  % 1 row per layer with format [k, nf]
+conv_layer_sizes = [5, 100; 3, 100];    % 1 row per layer with format [k, nf]
 ConvNet = InitConvNet(conv_layer_sizes, d, n_len, K);
 
 % hyper-parameters
-n_updates = 50000;
+n_updates = 20000;
 n_smallest_class = FindSmallestClass(TrainingSet.ys, K);
 n = size(TrainingSet.X, 2);
 batch_size = 100;
@@ -249,20 +249,25 @@ saveas(f_loss, [dir_result_pics 'loss.jpg']);
 saveas(f_acc, [dir_result_pics 'accuracy.jpg']);
 
 % accuracy (on validation set, not test set, see instructions)
-acc = ComputeAccuracy(ValidationSet.X, ValidationSet.ys, ConvNet);
+[acc, acc_per_class] = ComputeAccuracy(ValidationSet.X, ValidationSet.ys, ConvNet);
 fprintf('Accuracy (validation set): %.2f%%\n', acc*100);
+fprintf('Accuracy per class (validation set):\n');
+for k = 1:K
+    fprintf('%s: %.2f%%\n', languages{k}, acc_per_class(k)*100);
+end
+fprintf('\n');
 
 % confusion matrix (on validation set, not test set, see instructions)
 CM = ComputeConfusionMatrix(ValidationSet.X, ValidationSet.ys, ConvNet);
 f_cm = figure();
 confusionchart(CM, languages);
 saveas(f_cm, [dir_result_pics 'confusion_matrix.jpg']);
-fprintf('Confusion matrix (validation set)\n');
-disp(CM);
+% fprintf('Confusion matrix (validation set)\n');
+% disp(CM);
 
 % predict my surname and those of my friends
 names = {'ruggeri', 'migliore', 'rosso', 'frdr', 'johnathan', 'gonzales'};
-ys = [10, 10, 10, 7, 2, 17];
+ys = [10, 10, 10, 7, 5, 17];
 [X, Ys] = EncodeNames(names, ys, d, n_len, K, char_to_ind);
 P = EvaluateClassifier(X, ConvNet);
 [~, ypred] = max(P);
@@ -309,7 +314,7 @@ end
 
 function ConvNet = InitConvNet(conv_layer_sizes, d, n_len, K)
     % convolutional layers
-    for l = 1:size(conv_layer_sizes)
+    for l = 1:size(conv_layer_sizes, 1)
         k = conv_layer_sizes(l, 1);
         nf = conv_layer_sizes(l, 2);
         
@@ -334,7 +339,7 @@ end
 function MF = MakeMFMatrix(F, nlen)
     [d, k, nf] = size(F);
     nlen1 = nlen - k + 1;   % width of a response map
-    dk = d*k;              % size of a vectorized filter
+    dk = d*k;               % size of a vectorized filter
     MF = zeros(nlen1*nf, nlen*d);
     VF = reshape(F, [dk, nf])';
     
@@ -353,7 +358,7 @@ function MX = MakeMXMatrix(x_input, d, k, nf)
     nlen1 = nlen - k + 1;   % width of a response map
     dk = d*k;               % size of a vectorized filter
 
-    MX = zeros((nlen-k+1)*nf, dk*nf);
+    MX = zeros(nlen1*nf, dk*nf);
     X_input = reshape(x_input, [d, nlen]);
     
     for n = 1:nlen1
@@ -488,11 +493,14 @@ function [ConvNet, f_loss, f_acc] = MiniBatchGD(TrainingSet, ValidationSet, GDpa
         % stats
         n_update = GDparams.n_update;       % compute stats every n_update
         n_measures = floor(max_update / n_update);
-        train_loss = [ComputeLoss(TrainingSet.X, TrainingSet.Ys, ConvNet), zeros(1, n_measures+1)];
-        val_loss = [ComputeLoss(ValidationSet.X, ValidationSet.Ys, ConvNet), zeros(1, n_measures+1)];
-        train_acc = [ComputeAccuracy(TrainingSet.X, TrainingSet.ys, ConvNet), zeros(1, n_measures+1)];
-        val_acc = [ComputeAccuracy(ValidationSet.X, ValidationSet.ys, ConvNet), zeros(1, n_measures+1)];
-        measured_updates = [0, zeros(1, n_measures+1)];
+        if mod(max_update, n_update) ~= 0
+            n_measures = n_measures + 1;
+        end
+        train_loss = [ComputeLoss(TrainingSet.X, TrainingSet.Ys, ConvNet), zeros(1, n_measures)];
+        val_loss = [ComputeLoss(ValidationSet.X, ValidationSet.Ys, ConvNet), zeros(1, n_measures)];
+        train_acc = [ComputeAccuracy(TrainingSet.X, TrainingSet.ys, ConvNet), zeros(1, n_measures)];
+        val_acc = [ComputeAccuracy(ValidationSet.X, ValidationSet.ys, ConvNet), zeros(1, n_measures)];
+        measured_updates = [0, zeros(1, n_measures)];
         fprintf('Confusion matrix (validation set, update %d of %d)\n', 0, max_update);
         disp(ComputeConfusionMatrix(ValidationSet.X, ValidationSet.ys, ConvNet));
         idx_measure = 2;
@@ -593,12 +601,26 @@ function [ConvNet, f_loss, f_acc] = MiniBatchGD(TrainingSet, ValidationSet, GDpa
     end
 end
 
-function acc = ComputeAccuracy(X_batch, ys_batch, ConvNet)
+function [acc, acc_per_class] = ComputeAccuracy(X_batch, ys_batch, ConvNet)
     P_batch = EvaluateClassifier(X_batch, ConvNet);
     [~, ypred] = max(P_batch);
     nCorrect = length(find(ypred == ys_batch));
     nTot = size(X_batch, 2);
     acc = nCorrect / nTot;
+    
+    if nargout > 1
+        K = size(ConvNet.W, 1);
+        acc_per_class = zeros(K, 1);
+        for k = 1:K
+            % data belonging to class k
+            idx = find(ys_batch == k);
+            nTotal = length(idx);
+            
+            % # data belonging to class k and predicted as class k
+            nCorrect = length(find(ypred(idx) == k));
+            acc_per_class(k) = nCorrect / nTotal;
+        end
+    end
 end
 
 function CM = ComputeConfusionMatrix(X_batch, ys_batch, ConvNet)
