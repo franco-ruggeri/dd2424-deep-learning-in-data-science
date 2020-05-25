@@ -16,7 +16,7 @@ global RANDOM_SEARCH;
 DEBUG = false;
 OPTIMIZATIONS.A = true;         % pre-computed M_{x,k,nf} for the first layer
 OPTIMIZATIONS.B = true;         % M_{x,k} instead of M_{x,k,nf}
-COMPENSATE_IMBALANCE = true;    % compensate imbalance of dataset
+COMPENSATE_IMBALANCE = false;    % compensate imbalance of dataset
 RANDOM_SEARCH = false;
 
 
@@ -228,11 +228,11 @@ end
 disp('Training best network...');
 
 % ConvNet architecture
-conv_layer_sizes = [5, 100; 3, 100];    % 1 row per layer with format [k, nf]
+conv_layer_sizes = [5, 20; 3, 20];    % 1 row per layer with format [k, nf]
 ConvNet = InitConvNet(conv_layer_sizes, d, n_len, K);
 
 % hyper-parameters
-n_updates = 20000;
+n_updates = 50000;
 n_smallest_class = FindSmallestClass(TrainingSet.ys, K);
 n = size(TrainingSet.X, 2);
 batch_size = 100;
@@ -266,8 +266,8 @@ saveas(f_cm, [dir_result_pics 'confusion_matrix.jpg']);
 % disp(CM);
 
 % predict my surname and those of my friends
-names = {'ruggeri', 'migliore', 'rosso', 'frdr', 'johnathan', 'gonzales'};
-ys = [10, 10, 10, 7, 5, 17];
+names = {'ruggeri', 'salmeri', 'lee', 'scofield', 'fdfr', 'gonzales'};
+ys = [10, 10, 2, 5, 7, 17];
 [X, Ys] = EncodeNames(names, ys, d, n_len, K, char_to_ind);
 P = EvaluateClassifier(X, ConvNet);
 [~, ypred] = max(P);
@@ -448,7 +448,7 @@ function Gs = ComputeGradients(X_batch, Ys_batch, P_batch, ConvNet)
 
         % back-propagate gradient
         if l > 1
-            nlen = size(X_batch{l}, 1) / size(ConvNet.F{l}, 1);
+            nlen = size(X_batch{l}, 1) / d;
             MF = MakeMFMatrix(ConvNet.F{l}, nlen);
             
             G_batch = MF' * G_batch;
