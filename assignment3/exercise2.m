@@ -230,7 +230,7 @@ disp('Training best network...');
 
 % ConvNet architecture
 % 1 row per layer with format [k, nf, stride, padding]
-conv_layers = [3, 20, 1, 1; 3, 20, 1, 1; 3, 20, 1, 1];
+conv_layers = [5, 100, 1, 2; 1, 50, 1, 0; 3, 50, 1, 1; 1, 100, 1, 0];
 ConvNet = InitConvNet(conv_layers, d, n_len, K);
 
 % hyper-parameters
@@ -268,8 +268,8 @@ saveas(f_cm, [dir_result_pics 'confusion_matrix.jpg']);
 % disp(CM);
 
 % predict my surname and those of my friends
-names = {'ruggeri', 'migliore', 'rosso', 'frdr', 'johnathan', 'gonzales'};
-ys = [10, 10, 10, 7, 5, 17];
+names = {'ruggeri', 'salmeri', 'lee', 'scofield', 'fdfr', 'gonzales'};
+ys = [10, 10, 2, 5, 7, 17];
 [X, Ys] = EncodeNames(names, ys, d, n_len, K, char_to_ind);
 P = EvaluateClassifier(X, ConvNet);
 [~, ypred] = max(P);
@@ -473,8 +473,8 @@ function Gs = ComputeGradients(X_batch, Ys_batch, P_batch, ConvNet)
             % computational graph, it should be done before the previous
             % operation, but we would need X_batch not padded. Having
             % X_batch padded, we do it here, the result is the same.
-            idx_start = ConvNet.padding(l)*d;
-            idx_end = size(G_batch, 1) - ConvNet.padding(l)*d - 1;
+            idx_start = ConvNet.padding(l)*d + 1;
+            idx_end = size(G_batch, 1) - ConvNet.padding(l)*d;
             G_batch = G_batch(idx_start:idx_end, :);
         end
     end
