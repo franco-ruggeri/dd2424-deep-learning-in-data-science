@@ -17,7 +17,7 @@ DEBUG = false;
 OPTIMIZATIONS.A = true;         % pre-computed M_{x,k,nf} for the first layer
 OPTIMIZATIONS.B = true;         % M_{x,k} instead of M_{x,k,nf}
 COMPENSATE_IMBALANCE = true;    % compensate imbalance of dataset
-RANDOM_SEARCH = false;
+RANDOM_SEARCH = true;
 
 
 %% Prepare data
@@ -159,13 +159,13 @@ if RANDOM_SEARCH
 
     filename = 'random_search.txt';
 
-    n_trials = 10;
+    n_trials = 20;
     n_updates = 1000;
     n_smallest_class = FindSmallestClass(TrainingSet.ys, K);
 
     % learning rate
-    eta_min = -3;
-    eta_max = -3;
+    eta_min = -4;
+    eta_max = -4;
     eta = eta_min + (eta_max - eta_min) * rand(n_trials, 1);
     eta = 10.^eta;      % log scale
 
@@ -175,46 +175,42 @@ if RANDOM_SEARCH
     batch_size = randi([batch_size_min, batch_size_max], [n_trials, 1]);
 
     % architecture
-    % 1 row per layer with format [k, nf, stride, padding]
-    conv_layers_min = [1, 1, 1, 1; 1, 1, 1, 1];
-    conv_layers_max = [10, 100, 3, 3; 10, 100, 3, 3];
-    conv_layers = zeros([size(conv_layers_min), n_trials]);
-    n_conv_layers = size(conv_layers, 1);
-    for r = 1:size(conv_layers, 1)
-        for c = 1:size(conv_layers, 2)
-            cl_min = conv_layers_min(r, c);
-            cl_max = conv_layers_max(r, c);
-            conv_layers(r, c, :) = randi([cl_min, cl_max], [1, 1, n_trials]);
-        end
-    end
+    n_conv_layers_min = 2;
+    n_conv_layers_max = 5;
+    n_conv_layers = randi([n_conv_layers_min, n_conv_layers_max], [n_trials, 1]);
+    k_min = 3;
+    k_max = 7;
+    k = randi([k_min, k_max], [n_trials, 1]);
+    nf_min = 10;
+    nf_max = 100;
+    nf = randi([nf_min, nf_max], [n_trials, 1]);
 
     % train and save results
     fileID = fopen([dir_result_searches filename], 'a');
     n = size(TrainingSet.X, 2);
     for iTrial = 1:n_trials
-        % train
-        fprintf('eta=%f, batch_size=%d', eta(iTrial), batch_size(iTrial));
-        for iLayer = 1:n_conv_layers
-            fprintf(', k%d=%d, n%d=%d, stride%d=%d, padding%d=%d', iLayer, conv_layers(iLayer, 1, iTrial), iLayer, conv_layers(iLayer, 2, iTrial), iLayer, conv_layers(iLayer, 3, iTrial), iLayer, conv_layers(iLayer, 4, iTrial));
-        end
-        fprintf(' - training... ');
-
+        % prepare parameters
+        fprintf('eta=%f, batch_size=%d, k=%d, nf=%d, n_conv_layers=%d - training... ', eta(iTrial), batch_size(iTrial), k(iTrial), nf(iTrial), n_conv_layers(iTrial));
         if COMPENSATE_IMBALANCE
             epochs = round(n_updates / floor(n_smallest_class * K / batch_size(iTrial)));
         else
             epochs = round(n_updates / floor(n / batch_size(iTrial)));
         end
+        conv_layers = zeros(n_conv_layers(iTrial), 4);
+        conv_layers(:, 1) = k(iTrial);
+        conv_layers(:, 2) = nf(iTrial);
+        % stride and padding to keep same spatial dimension
+        conv_layers(:, 3) = 1;
+        conv_layers(:, 4) = floor((k(iTrial) - 1) / 2);
+        
+        % train
         GDparams = struct('eta', eta(iTrial), 'rho', .9, 'batch_size', batch_size(iTrial), 'epochs',epochs);
-        ConvNet = InitConvNet(conv_layers(:, :, iTrial), d, n_len, K);
+        ConvNet = InitConvNet(conv_layers, d, n_len, K);
         ConvNet = MiniBatchGD(TrainingSet, ValidationSet, GDparams, ConvNet);
 
         % test and save
         acc = ComputeAccuracy(ValidationSet.X, ValidationSet.ys, ConvNet);
-        fprintf(fileID, 'eta=%f, batch_size=%d', eta(iTrial), batch_size(iTrial));
-        for iLayer = 1:n_conv_layers
-            fprintf(fileID, ', k%d=%d, n%d=%d, stride%d=%d, padding%d=%d', iLayer, conv_layers(iLayer, 1, iTrial), iLayer, conv_layers(iLayer, 2, iTrial), iLayer, conv_layers(iLayer, 3, iTrial), iLayer, conv_layers(iLayer, 4, iTrial));
-        end
-        fprintf(fileID, ' - validation accuracy %.2f%%\n', acc*100);
+        fprintf(fileID, 'eta=%f, batch_size=%d, k=%d, nf=%d, n_conv_layers=%d - validation accuracy %.2f%%\n', eta(iTrial), batch_size(iTrial), k(iTrial), nf(iTrial), n_conv_layers(iTrial), acc*100);
         fprintf('done\n');
     end
     fprintf(fileID, '\n\n\n');
@@ -230,11 +226,11 @@ disp('Training best network...');
 
 % ConvNet architecture
 % 1 row per layer with format [k, nf, stride, padding]
-conv_layers = [5, 100, 1, 2; 1, 50, 1, 0; 3, 50, 1, 1; 1, 100, 1, 0];
+conv_layers = [5, 100, 1, 2; 3, 100, 1, 1];
 ConvNet = InitConvNet(conv_layers, d, n_len, K);
 
 % hyper-parameters
-n_updates = 20000;
+n_updates = 40000;
 n_smallest_class = FindSmallestClass(TrainingSet.ys, K);
 n = size(TrainingSet.X, 2);
 batch_size = 100;
