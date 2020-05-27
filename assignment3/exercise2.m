@@ -17,7 +17,7 @@ DEBUG = false;
 OPTIMIZATIONS.A = true;         % pre-computed M_{x,k,nf} for the first layer
 OPTIMIZATIONS.B = true;         % M_{x,k} instead of M_{x,k,nf}
 COMPENSATE_IMBALANCE = true;    % compensate imbalance of dataset
-RANDOM_SEARCH = true;
+RANDOM_SEARCH = false;
 
 
 %% Prepare data
@@ -159,8 +159,8 @@ if RANDOM_SEARCH
 
     filename = 'random_search.txt';
 
-    n_trials = 20;
-    n_updates = 1000;
+    n_trials = 1;
+    n_updates = 10000;
     n_smallest_class = FindSmallestClass(TrainingSet.ys, K);
 
     % learning rate
@@ -175,13 +175,13 @@ if RANDOM_SEARCH
     batch_size = randi([batch_size_min, batch_size_max], [n_trials, 1]);
 
     % architecture
-    n_conv_layers_min = 2;
+    n_conv_layers_min = 5;
     n_conv_layers_max = 5;
     n_conv_layers = randi([n_conv_layers_min, n_conv_layers_max], [n_trials, 1]);
-    k_min = 3;
-    k_max = 7;
+    k_min = 5;
+    k_max = 5;
     k = randi([k_min, k_max], [n_trials, 1]);
-    nf_min = 10;
+    nf_min = 100;
     nf_max = 100;
     nf = randi([nf_min, nf_max], [n_trials, 1]);
 
@@ -226,11 +226,11 @@ disp('Training best network...');
 
 % ConvNet architecture
 % 1 row per layer with format [k, nf, stride, padding]
-conv_layers = [5, 100, 1, 2; 3, 100, 1, 1];
+conv_layers = [3, 100, 1, 1; 3, 100, 1, 1; 3, 100, 1, 1; 3, 100, 1, 1; 3, 100, 1, 1;];
 ConvNet = InitConvNet(conv_layers, d, n_len, K);
 
 % hyper-parameters
-n_updates = 40000;
+n_updates = 1000;
 n_smallest_class = FindSmallestClass(TrainingSet.ys, K);
 n = size(TrainingSet.X, 2);
 batch_size = 100;
@@ -239,7 +239,7 @@ if COMPENSATE_IMBALANCE
 else
     epochs = round(n_updates / floor(n / batch_size));
 end
-GDparams = struct('eta', .001, 'rho', .9, 'batch_size', batch_size, 'epochs', epochs, 'n_update', 500);
+GDparams = struct('eta', .0005, 'rho', .9, 'batch_size', batch_size, 'epochs', epochs, 'n_update', 500);
 
 % train
 [ConvNet, f_loss, f_acc] = MiniBatchGD(TrainingSet, ValidationSet, GDparams, ConvNet);
@@ -473,6 +473,9 @@ function Gs = ComputeGradients(X_batch, Ys_batch, P_batch, ConvNet)
             idx_end = size(G_batch, 1) - ConvNet.padding(l)*d;
             G_batch = G_batch(idx_start:idx_end, :);
         end
+        
+        disp(max(Gs{l}, [], 'all'))
+        disp(min(Gs{l}, [], 'all'))
     end
 end
 
@@ -520,6 +523,7 @@ function [ConvNet, f_loss, f_acc] = MiniBatchGD(TrainingSet, ValidationSet, GDpa
         train_acc = [ComputeAccuracy(TrainingSet.X, TrainingSet.ys, ConvNet), zeros(1, n_measures)];
         val_acc = [ComputeAccuracy(ValidationSet.X, ValidationSet.ys, ConvNet), zeros(1, n_measures)];
         measured_updates = [0, zeros(1, n_measures)];
+        fprintf('Accuracy (validation set, update %d of %d): %.2f%%\n', 0, max_update, val_acc(1)*100);
         fprintf('Confusion matrix (validation set, update %d of %d)\n', 0, max_update);
         disp(ComputeConfusionMatrix(ValidationSet.X, ValidationSet.ys, ConvNet));
         idx_measure = 2;
@@ -590,6 +594,7 @@ function [ConvNet, f_loss, f_acc] = MiniBatchGD(TrainingSet, ValidationSet, GDpa
                     idx_measure = idx_measure + 1;
 
                     % confusion matrix
+                    fprintf('Accuracy (validation set, update %d of %d): %.2f%%\n', count_update, max_update, aux*100);
                     fprintf('Confusion matrix (validation set, iteration %d of %d)\n', count_update, max_update);
                     disp(ComputeConfusionMatrix(ValidationSet.X, ValidationSet.ys, ConvNet));
                 end

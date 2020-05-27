@@ -16,7 +16,7 @@ global RANDOM_SEARCH;
 DEBUG = false;
 OPTIMIZATIONS.A = true;         % pre-computed M_{x,k,nf} for the first layer
 OPTIMIZATIONS.B = true;         % M_{x,k} instead of M_{x,k,nf}
-COMPENSATE_IMBALANCE = false;    % compensate imbalance of dataset
+COMPENSATE_IMBALANCE = true;    % compensate imbalance of dataset
 RANDOM_SEARCH = false;
 
 
@@ -501,6 +501,7 @@ function [ConvNet, f_loss, f_acc] = MiniBatchGD(TrainingSet, ValidationSet, GDpa
         train_acc = [ComputeAccuracy(TrainingSet.X, TrainingSet.ys, ConvNet), zeros(1, n_measures)];
         val_acc = [ComputeAccuracy(ValidationSet.X, ValidationSet.ys, ConvNet), zeros(1, n_measures)];
         measured_updates = [0, zeros(1, n_measures)];
+        fprintf('Accuracy (validation set, update %d of %d): %.2f%%\n', 0, max_update, val_acc(1)*100);
         fprintf('Confusion matrix (validation set, update %d of %d)\n', 0, max_update);
         disp(ComputeConfusionMatrix(ValidationSet.X, ValidationSet.ys, ConvNet));
         idx_measure = 2;
@@ -571,6 +572,7 @@ function [ConvNet, f_loss, f_acc] = MiniBatchGD(TrainingSet, ValidationSet, GDpa
                     idx_measure = idx_measure + 1;
 
                     % confusion matrix
+                    fprintf('Accuracy (validation set, update %d of %d): %.2f%%\n', count_update, max_update, aux*100);
                     fprintf('Confusion matrix (validation set, iteration %d of %d)\n', count_update, max_update);
                     disp(ComputeConfusionMatrix(ValidationSet.X, ValidationSet.ys, ConvNet));
                 end
