@@ -9,7 +9,7 @@ rng(400)
 
 fprintf('Loading data...\n\n');
 
-dir = '../datasets/cifar-10-batches-mat/';
+dir = '../datasets/cifar_10/';
 
 [X, Y, y] = LoadBatch([dir 'data_batch_1.mat']);
 TrainingSet = struct('X', X, 'Y', Y, 'y', y);

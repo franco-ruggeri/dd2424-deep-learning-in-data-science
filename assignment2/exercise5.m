@@ -4,7 +4,7 @@ clc
 
 rng(1)
 
-dir_dataset = '../datasets/cifar-10-batches-mat/';
+dir_dataset = '../datasets/cifar_10/';
 dir_result_pics = 'result_pics/';
 dir_result_searches = 'result_searches/';
 

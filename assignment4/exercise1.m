@@ -11,7 +11,7 @@ clc
 
 rng(1);
 
-dir_dataset = '../datasets/harry-potter-book/';
+dir_dataset = '../datasets/harry_potter_book/';
 dir_result_pics = 'result_pics/';
 dir_result_synthesis = 'result_synthesis/';
 
@@ -46,10 +46,10 @@ if DEBUG
     keys_char = keys(char_to_ind);
     keys_ind = keys(ind_to_char);
     for k = 1:K
-        if keys_char{k} == 10 && ind_to_char(keys_ind{k}) == 10
+        if keys_char{k} == newline && ind_to_char(keys_ind{k}) == newline
             fprintf('\\n -> %d\n', char_to_ind(keys_char{k}));
             fprintf('%d -> \\n\n', keys_ind{k});
-        elseif keys_char{k} == 9 && ind_to_char(keys_ind{k}) == 9
+        elseif keys_char{k} == char(9) && ind_to_char(keys_ind{k}) == char(9)
             fprintf('\\t -> %d\n', char_to_ind(keys_char{k}));
             fprintf('%d -> \\t\n', keys_ind{k});
         else
@@ -269,6 +269,11 @@ function [RNN, f_loss] = AdaGrad(RNN, X, Y, GDparams)
     freq_show_loss = GDparams.freq_show_loss;
     smooth_loss = zeros(1, max_iter);
     
+    % init sum of squares of gradients
+    for f = fieldnames(RNN)'
+        G.(f{1}) = 0;
+    end
+    
     for epoch = 1:epochs
         hprev = zeros(m, 1);    % reset
         
@@ -291,16 +296,12 @@ function [RNN, f_loss] = AdaGrad(RNN, X, Y, GDparams)
             grads = Backward(RNN, hprev, X_seq, Y_seq, H, P);
             
             % update parameters (AdaGrad)
-            for f = fieldnames(RNN)'    
+            for f = fieldnames(RNN)'
                 % gradient clipping
                 grads.(f{1}) = max(min(grads.(f{1}), 5), -5);
                 
                 % sum of squares of gradients
-                if iter == 1
-                    G.(f{1}) = grads.(f{1}).^2;
-                else
-                    G.(f{1}) = G.(f{1}) + grads.(f{1}).^2;
-                end
+                G.(f{1}) = G.(f{1}) + grads.(f{1}).^2;
                 
                 % use effective learning rates
                 % adapted independently for each parameter!
