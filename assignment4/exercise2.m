@@ -181,7 +181,7 @@ disp('Synthesizing...');
 
 h0 = zeros(m, 1);
 x0 = zeros(K, 1);
-x0(char_to_ind(start_of_tweet)) = 1;
+x0(start_of_tweet) = 1;
 n_max = 140;
 
 Y = Synthesize(RNN, h0, x0, n_max, end_of_tweet);
@@ -219,11 +219,11 @@ function Y = Synthesize(RNN, h0, x0, n_max, end_of_seq)
         
         % sample
         y = Sample(p);
+        Y(y,t) = 1;
         if y == end_of_seq  % end of sequence => stop here
-            Y = Y(:,t-1);
+            Y = Y(:,t);
             return;
         end
-        Y(y,t) = 1;
         x = Y(:,t);
     end
 end
@@ -356,7 +356,7 @@ function [RNN, f_loss] = AdaGrad(RNN, X_chars, Y_chars, GDparams)
                 
                 % synthesis
                 if iter == 1 || mod(iter, freq_synthesis) == 0
-                    Y_synth = Synthesize(RNN, hprev, start_of_seq, max_length_synthesis, end_of_seq);
+                    Y_synth = Synthesize(RNN, zeros(m, 1), start_of_seq, max_length_synthesis, end_of_seq);
                     Y_synth = Decode(Y_synth, ind_to_char);
                     fprintf(fid_synthesis, 'Before iter=%d/%d\n%s\n\n\n', iter, max_iter, Y_synth);
                 end
