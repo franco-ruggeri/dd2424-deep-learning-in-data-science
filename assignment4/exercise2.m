@@ -68,9 +68,8 @@ for n = 1:n_tweets
 %     tweets{n} = strrep(tweets{n}, char(13), '');
 end
 
-% remove too short tweets
-seq_length = 25;
-idx = find(cellfun('length', tweets) < seq_length);
+% remove empty (wrong) tweets
+idx = cellfun('length', tweets) == 0;
 tweets(idx) = [];
 n_tweets = numel(tweets);
 
@@ -106,11 +105,23 @@ if DEBUG
     fprintf('\n');
 end
 
-X_chars = tweets;
-Y_chars = tweets;
+% prepare inputs and targets
+seq_length = 20;
+X_chars = cell(size(tweets));
+Y_chars = cell(size(tweets));
 for n = 1:n_tweets
-    X_chars{n} = [start_of_tweet, X_chars{n}];
-    Y_chars{n} = [Y_chars{n}, end_of_tweet];    % target is next character!
+    % pad so that all characters are used
+    aux = mod(length(tweets{n})+1, seq_length);
+    if aux == 0
+        padding = 0;
+    else
+        padding = seq_length - aux;
+    end
+    padding = repmat(end_of_tweet, 1, padding);
+    tweets{n} = [start_of_tweet, tweets{n}, end_of_tweet, padding];
+    
+    X_chars{n} = tweets{n}(1:end-1);
+    Y_chars{n} = tweets{n}(2:end);      % target is next character!
 end
 
 start_of_tweet = char_to_ind(start_of_tweet);
@@ -156,7 +167,7 @@ disp('Training...');
 m = 100;                    % dimensionality hidden state
 GDparams.eta = .1;
 GDparams.seq_length = seq_length;
-GDparams.epochs = 1;
+GDparams.epochs = 10;
 GDparams.char_to_ind_X = char_to_ind;
 GDparams.char_to_ind_Y = char_to_ind;
 GDparams.fn_synthesis = [dir_result_synthesis 'synthesis_while_training.txt'];
@@ -185,14 +196,9 @@ n_max = 140;
 n_tweets = 10;
 
 fid = fopen([dir_result_synthesis 'synthesis_final.txt'], 'a');
-end_of_tweet_char = ind_to_char(end_of_tweet);
 for n = 1:n_tweets
-    Y_chars = end_of_tweet_char;
-    while Y_chars(1) == end_of_tweet_char
-        Y = Synthesize(RNN, h0, x0, n_max, end_of_tweet);
-        Y_chars = Decode(Y, ind_to_char);
-    end
-    
+    Y = Synthesize(RNN, h0, x0, n_max, end_of_tweet);
+    Y_chars = Decode(Y, ind_to_char);
     fprintf('tweet %d/%d\n', n, n_tweets);
     fprintf('%s\n\n', Y_chars);
     fprintf(fid, 'tweet %d/%d\n', n, n_tweets);
@@ -227,10 +233,17 @@ function Y = Synthesize(RNN, h0, x0, n_max, end_of_seq)
         p = softmax(o);
         
         % sample
-        y = Sample(p);
+        if t == 1           % first character => can't sample end of seq
+            y = end_of_seq;
+            while y == end_of_seq
+                y = Sample(p);
+            end
+        else
+            y = Sample(p);
+        end
         Y(y,t) = 1;
         if y == end_of_seq  % end of sequence => stop here
-            Y = Y(:,t);
+            Y = Y(:,1:t);
             return;
         end
         x = Y(:,t);
