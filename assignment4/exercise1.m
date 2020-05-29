@@ -110,7 +110,7 @@ disp('Training...');
 m = 100;                    % dimensionality hidden state
 GDparams.eta = .1;
 GDparams.seq_length = 25;
-GDparams.epochs = 10;
+GDparams.epochs = 1;
 GDparams.fn_synthesis = [dir_result_synthesis 'synthesis_while_training.txt'];
 GDparams.freq_synthesis = 500;
 GDparams.length_synthesis = 200;
@@ -277,7 +277,7 @@ function [RNN, f_loss] = AdaGrad(RNN, X, Y, GDparams)
     for epoch = 1:epochs
         hprev = zeros(m, 1);    % reset
         
-        for e = 1:seq_length:n-seq_length
+        for e = 1:seq_length:n-seq_length+1
             % select piece of sequence
             X_seq = X(:, e:e+seq_length-1);
             Y_seq = Y(:, e:e+seq_length-1);
