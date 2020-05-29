@@ -16,6 +16,7 @@ rng(1);
 dir_dataset = '../datasets/trump_tweets/';
 dir_result_pics = 'result_pics/';
 dir_result_synthesis = 'result_synthesis/';
+dir_result_models = 'result_models/';
 
 global DEBUG
 DEBUG = false;
@@ -43,7 +44,7 @@ fn_encoded_tweets = [dir_dataset 'tweets_encoded.mat'];
 tweets = {};
 for fn = fn_tweets'
     aux = jsondecode(fileread(fn{1}));
-    idx = find(cell2mat(extractfield(aux, 'is_retweet')) == false);
+    idx = cell2mat(extractfield(aux, 'is_retweet')) == false;
     tweets = [tweets; extractfield(aux(idx), 'text')'];
 end
 
@@ -155,7 +156,7 @@ disp('Training...');
 m = 100;                    % dimensionality hidden state
 GDparams.eta = .1;
 GDparams.seq_length = seq_length;
-GDparams.epochs = 10;
+GDparams.epochs = 1;
 GDparams.char_to_ind_X = char_to_ind;
 GDparams.char_to_ind_Y = char_to_ind;
 GDparams.fn_synthesis = [dir_result_synthesis 'synthesis_while_training.txt'];
@@ -170,9 +171,7 @@ GDparams.freq_show_loss = 100;
 RNN = InitRNN(K, m, K);
 [RNN, f_loss] = AdaGrad(RNN, X_chars, Y_chars, GDparams);
 saveas(f_loss, [dir_result_pics 'smooth_loss.jpg']);
-
-% TODO: remove this
-save('final_RNN.mat', 'RNN');
+save([dir_result_models 'RNN.mat'], 'RNN');
 
 
 %% Synthesize text
@@ -183,13 +182,23 @@ h0 = zeros(m, 1);
 x0 = zeros(K, 1);
 x0(start_of_tweet) = 1;
 n_max = 140;
+n_tweets = 10;
 
-Y = Synthesize(RNN, h0, x0, n_max, end_of_tweet);
-Y_chars = Decode(Y, ind_to_char);
-Y_chars(5) = end_of_tweet;
-fprintf('%s\n', Y_chars);
 fid = fopen([dir_result_synthesis 'synthesis_final.txt'], 'a');
-fprintf(fid, '%s\n\n\n', Y_chars);
+end_of_tweet_char = ind_to_char(end_of_tweet);
+for n = 1:n_tweets
+    Y_chars = end_of_tweet_char;
+    while Y_chars(1) == end_of_tweet_char
+        Y = Synthesize(RNN, h0, x0, n_max, end_of_tweet);
+        Y_chars = Decode(Y, ind_to_char);
+    end
+    
+    fprintf('tweet %d/%d\n', n, n_tweets);
+    fprintf('%s\n\n', Y_chars);
+    fprintf(fid, 'tweet %d/%d\n', n, n_tweets);
+    fprintf(fid, '%s\n\n\n', Y_chars);
+end
+fclose(fid);
 
 
 %% Functions

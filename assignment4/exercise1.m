@@ -14,6 +14,7 @@ rng(1);
 dir_dataset = '../datasets/harry_potter_book/';
 dir_result_pics = 'result_pics/';
 dir_result_synthesis = 'result_synthesis/';
+dir_result_models = 'result_models/';
 
 global DEBUG
 DEBUG = false;
@@ -121,6 +122,7 @@ GDparams.freq_show_loss = 100;
 RNN = InitRNN(K, m, K);
 [RNN, f_loss] = AdaGrad(RNN, X, Y, GDparams);
 saveas(f_loss, [dir_result_pics 'smooth_loss.jpg']);
+save([dir_result_models 'RNN.mat'], 'RNN');
 
 
 %% Synthesize text
@@ -138,6 +140,7 @@ Y_chars = Decode(Y, ind_to_char);
 fprintf('%s\n', Y_chars);
 fid = fopen([dir_result_synthesis 'synthesis_final.txt'], 'a');
 fprintf(fid, '%s\n\n\n', Y_chars);
+fclose(fid);
 
 
 %% Functions
