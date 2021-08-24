@@ -1,2 +1,2 @@
 # Deep Learning in Data Science
-Assignments for the course DD2424 Deep Learning in Data Science at KTH.
+Assignments of the Deep Learning in Data Science course (DD2424) at KTH.
